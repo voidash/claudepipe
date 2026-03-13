@@ -1,16 +1,16 @@
-# /footage — AI Video Editing Pipeline for Claude Code
+# claudepipe
 
-A Claude Code skill that turns raw camera footage + screen recordings into fully edited NLE projects. Claude analyzes your footage, makes editing decisions (cuts, transitions, crop keyframes), and produces Blender VSE and/or FCPXML projects importable by DaVinci Resolve, Final Cut Pro, and Premiere.
+AI video editing pipeline as a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill. Raw camera footage + screen recordings → fully edited NLE projects.
+
+Claude analyzes your footage, makes editing decisions (cuts, transitions, crop keyframes), and produces Blender VSE and/or FCPXML projects importable by DaVinci Resolve, Final Cut Pro, and Premiere.
 
 Built for a Nepali+English code-switching workflow but works with any language Gemini ASR supports.
 
 ## Install
 
-Clone into a directory and point Claude Code at it:
-
 ```bash
-git clone <this-repo> ~/my-video-project
-cd ~/my-video-project
+git clone git@github.com:voidash/claudepipe.git
+cd claudepipe
 claude  # start Claude Code
 ```
 
@@ -43,11 +43,11 @@ Phases in **bold** are conversational — Claude presents options and waits for 
 
 ## Architecture
 
-**Manifest-driven**: `footage_manifest.json` is the single source of truth. Every phase reads/writes it. See [`references/manifest-schema.md`](.claude/skills/footage/references/manifest-schema.md) for the full schema.
+**Manifest-driven**: `footage_manifest.json` is the single source of truth. Every phase reads/writes it. See [`manifest-schema.md`](.claude/skills/footage/references/manifest-schema.md) for the full schema.
 
 **Unit isolation**: After analysis, the timeline is decomposed into independent units (video, screencast, audio, text+image, animation). Each unit gets its own directory and manifest. Parallel Claude Code agents can refine different units simultaneously without conflicts.
 
-**Scripts are optional**: Reference implementations live in `scripts/`. Claude uses them for complex phases (Blender assembly, FCPXML export, YOLO, VAD, scene detection) and works inline for simpler ones. The SKILL.md describes *what* each phase does — that's the spec.
+**Scripts are optional**: Reference implementations live in `scripts/`. Claude uses them for complex phases (Blender assembly, FCPXML export, YOLO, VAD, scene detection) and works inline for simpler ones. `SKILL.md` describes *what* each phase does — that's the spec, not the scripts.
 
 **Multi-NLE output**:
 - **Blender VSE** — headless .blend generation with full timeline, SFX, music ducking, animated 9:16 crops
@@ -80,13 +80,6 @@ Phases in **bold** are conversational — Claude presents options and waits for 
 ├── references/           # 10 technical reference docs
 └── templates/            # Style config defaults
 ```
-
-## Key Rules
-
-- **Easing is NEVER linear** — crop keyframes use BEZIER, SINE, EXPO, BACK, ELASTIC, BOUNCE, or CONSTANT
-- **Never modify originals** — symlinks in `raw/`, processing on copies
-- **Nepali first** — default language "ne", ASR handles code-switching
-- **User has final say** — approval gates at every creative decision
 
 ## License
 
