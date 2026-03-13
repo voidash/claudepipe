@@ -1,0 +1,68 @@
+# Footage project working data (generated at runtime)
+footage_project_*/
+raw/
+audio/
+frames/
+analysis/
+sfx/
+music/
+animations/
+thumbnails/
+blender/
+exports/
+units/
+tmp/
+footage_manifest.json
+style_config.json
+
+# Video/audio/image files (source footage)
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.wav
+*.mp3
+*.flac
+*.aac
+*.ogg
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+
+# Blender
+*.blend
+*.blend1
+
+# FCPXML exports
+*.fcpxml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# YOLO model weights
+*.pt
+*.onnx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code project memory (user-specific)
+.claude/projects/

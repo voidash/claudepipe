@@ -1,0 +1,84 @@
+{
+  "version": "1.0.0",
+  "colors": {
+    "primary": "#FF6B35",
+    "secondary": "#004E89",
+    "accent": "#F7C948",
+    "background": "#1A1A2E",
+    "text": "#FFFFFF",
+    "text_secondary": "#B8B8D0",
+    "success": "#2ECC71",
+    "warning": "#F39C12",
+    "error": "#E74C3C"
+  },
+  "typography": {
+    "heading_font": "Poppins",
+    "body_font": "Inter",
+    "code_font": "JetBrains Mono",
+    "nepali_font": "Noto Sans Devanagari",
+    "heading_weight": 700,
+    "body_weight": 400,
+    "heading_size_scale": 1.4,
+    "body_size_base_px": 24
+  },
+  "manim": {
+    "background_color": "#1A1A2E",
+    "text_color": "#FFFFFF",
+    "highlight_color": "#FF6B35",
+    "arrow_color": "#004E89",
+    "quality": "fourk_quality",
+    "fps": 30,
+    "default_animation_run_time": 1.0,
+    "fade_in_time": 0.3,
+    "fade_out_time": 0.3,
+    "tex_template": "default",
+    "camera_width": 1920,
+    "camera_height": 1080
+  },
+  "remotion": {
+    "fps": 30,
+    "width": 1920,
+    "height": 1080,
+    "default_transition_duration_frames": 15,
+    "spring_config": {
+      "damping": 15,
+      "mass": 1,
+      "stiffness": 120
+    }
+  },
+  "thumbnail": {
+    "width": 1280,
+    "height": 720,
+    "title_font_size": 72,
+    "title_stroke_width": 4,
+    "title_stroke_color": "#000000",
+    "title_position": "center",
+    "overlay_opacity": 0.3,
+    "overlay_color": "#000000"
+  },
+  "crop_easing": {
+    "default": "BEZIER",
+    "on_scene_change": "SINE",
+    "on_emphasis": "BACK",
+    "on_action": "EXPO",
+    "min_movement_px": 20,
+    "max_speed_px_per_sec": 800,
+    "smoothing_window_seconds": 0.5
+  },
+  "audio": {
+    "music_volume_db": -18.0,
+    "music_duck_volume_db": -26.0,
+    "music_duck_attack_seconds": 0.3,
+    "music_duck_release_seconds": 0.8,
+    "sfx_volume_db": -6.0,
+    "speech_target_lufs": -16.0,
+    "fade_in_seconds": 2.0,
+    "fade_out_seconds": 3.0
+  },
+  "transitions": {
+    "default_type": "cut",
+    "default_crossfade_seconds": 0.5,
+    "between_topics": "fade_black",
+    "between_topics_seconds": 0.8
+  }
+}
