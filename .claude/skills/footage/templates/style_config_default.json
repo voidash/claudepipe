@@ -80,5 +80,16 @@
     "default_crossfade_seconds": 0.5,
     "between_topics": "fade_black",
     "between_topics_seconds": 0.8
+  },
+  "pipeline": {
+    "vision_backend": "gemini_flash",
+    "gemini_flash": {
+      "model": "gemini-2.5-flash",
+      "media_resolution": "low"
+    },
+    "claude_vision": {
+      "max_frames_per_clip": 10,
+      "sample_strategy": "representative"
+    }
   }
 }

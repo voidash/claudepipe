@@ -474,7 +474,8 @@ def _build_music_elements(
         dur = float(track.get("duration_seconds", 60.0))
         fade_in = float(placement.get("fade_in_seconds", 0.0) or 0.0)
         fade_out = float(placement.get("fade_out_seconds", 0.0) or 0.0)
-        ducking = track.get("ducking_keyframes", [])
+        ducking_obj = track.get("ducking", {})
+        ducking = ducking_obj.get("keyframes", []) if isinstance(ducking_obj, dict) else track.get("ducking_keyframes", [])
 
         clip = Element("asset-clip")
         clip.set("ref", f"a_{track_id}")
@@ -509,9 +510,9 @@ def _build_music_elements(
             # Sort and deduplicate
             kfs.sort(key=lambda x: x[0])
 
+            param = SubElement(adjust, "param")
+            param.set("name", "volume")
             for kf_time, kf_vol in kfs:
-                param = SubElement(adjust, "param")
-                param.set("name", "volume")
                 keyframe = SubElement(param, "keyframe")
                 keyframe.set("time", _t(kf_time, fps))
                 keyframe.set("value", f"{kf_vol:.3f}")
