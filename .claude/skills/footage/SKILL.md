@@ -379,7 +379,13 @@ When an agent cannot complete its task correctly:
 4. **Mark unit status as `"needs_review"`.**
 5. **Report failure to main agent** with enough detail that the user can decide what to do (retry with different params, skip music, provide their own track, etc.).
 
-The main agent presents all agent results (successes AND failures) to the user. The user decides how to handle failures — not the agent.
+**Main agent resolution:** When a parallel agent reports failure, the main agent attempts to resolve it before escalating to the user:
+1. Read the failure details from `claude_notes[unitId]`
+2. Diagnose: wrong API used? Missing dependency? Bad prompt? Malformed output?
+3. If resolvable (e.g., agent used wrong API → re-run with correct API, bad prompt → improve prompt and retry): fix and re-run the quality gates
+4. If not resolvable (e.g., external service down, ambiguous user intent, quality judgment call): present to the user with context and options
+
+The user only sees failures the main agent couldn't resolve on its own. Successes and resolved failures are reported as a summary.
 
 ### Phases 13–15: Per-Unit Refinement (PARALLELIZABLE)
 
