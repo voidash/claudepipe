@@ -1,6 +1,6 @@
 import path from "path";
 import fs from "fs/promises";
-import { existsSync } from "fs";
+import { existsSync, readdirSync } from "fs";
 
 const PROJECT_ROOT = process.env.PROJECT_ROOT;
 
@@ -50,6 +50,12 @@ export async function readUnitManifest(unitId: string): Promise<unknown> {
   const data = await fs.readFile(manifestPath, "utf-8");
   const parsed = JSON.parse(data);
 
+  // Fix symlink_path mismatches: unit manifests may reference original source
+  // filenames (e.g. "raw/GX012467.MP4") but the actual symlinks in the unit
+  // directory use clip IDs (e.g. "raw/clip_2467.MP4"). Build a lookup from
+  // what's actually on disk and correct the paths before serving.
+  fixSymlinkPaths(parsed, unitDir);
+
   // Unit manifests store paths relative to the unit directory (e.g. "raw/file.mov").
   // The media server resolves paths relative to PROJECT_ROOT.
   // Rewrite all unit-relative paths to PROJECT_ROOT-relative paths so the
@@ -59,6 +65,51 @@ export async function readUnitManifest(unitId: string): Promise<unknown> {
   rewriteUnitPaths(parsed, unitPrefix, pathPrefixes);
 
   return parsed;
+}
+
+/**
+ * Fix symlink_path values in clips when the manifest references a filename
+ * that doesn't exist in the unit's raw/ directory. Looks up the actual file
+ * by matching the clip ID (e.g. clip_2467 → raw/clip_2467.MP4).
+ */
+function fixSymlinkPaths(manifest: unknown, unitDir: string): void {
+  if (!manifest || typeof manifest !== "object") return;
+  const m = manifest as Record<string, unknown>;
+  const clips = m.clips;
+  if (!Array.isArray(clips)) return;
+
+  const rawDir = path.join(unitDir, "raw");
+  let actualFiles: string[];
+  try {
+    actualFiles = readdirSync(rawDir);
+  } catch {
+    return; // no raw/ directory — nothing to fix
+  }
+
+  const actualSet = new Set(actualFiles);
+
+  for (const clip of clips) {
+    if (!clip || typeof clip !== "object") continue;
+    const c = clip as Record<string, unknown>;
+    const symlinkPath = c.symlink_path;
+    if (typeof symlinkPath !== "string" || !symlinkPath.startsWith("raw/")) continue;
+
+    const manifestFilename = path.basename(symlinkPath);
+    if (actualSet.has(manifestFilename)) continue; // file exists, no fix needed
+
+    // Try to find by clip ID: clip.id = "clip_2467" → look for "clip_2467.*" in raw/
+    const clipId = typeof c.id === "string" ? c.id : null;
+    if (!clipId) continue;
+
+    const match = actualFiles.find((f) => {
+      const stem = f.replace(/\.[^.]+$/, "");
+      return stem === clipId;
+    });
+
+    if (match) {
+      c.symlink_path = `raw/${match}`;
+    }
+  }
 }
 
 /**
