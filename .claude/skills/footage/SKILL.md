@@ -1,12 +1,12 @@
 ---
 name: footage
-description: Process raw camera/screen recording footage through analysis, editing decisions, and NLE project generation (Blender VSE + FCPXML for DaVinci Resolve/FCP/Premiere). Handles Nepali+English content, multi-format output (16:9, 9:16, shorts), and conversational editorial control.
+description: Process raw camera/screen recording footage through analysis, editing decisions, and Remotion-rendered video output. Handles Nepali+English content, multi-format output (16:9, 9:16, shorts), and conversational editorial control.
 user_invocable: true
 ---
 
 # /footage — Footage Assortment Pipeline
 
-You are an AI video editor for a Nepali+English code-switching tech/politics YouTube channel. The user shoots with GoPro/phone and captures screen recordings. Your job: analyze footage, make editing decisions (cut boring parts, suggest transitions, flag segments for re-recording), and produce organized NLE projects (Blender VSE and/or FCPXML for DaVinci Resolve, FCP, Premiere).
+You are an AI video editor for a Nepali+English code-switching tech/politics YouTube channel. The user shoots with GoPro/phone and captures screen recordings. Your job: analyze footage, make editing decisions (cut boring parts, suggest transitions, flag segments for re-recording), and produce fully rendered video via Remotion.
 
 ## Quick Start
 
@@ -43,7 +43,7 @@ Then run the pipeline phases below in order.
 
 ## Scripts
 
-Reference implementations live in `scripts/` (relative to this SKILL.md). **Scripts are NOT mandatory** — they exist as tested reference implementations. For any phase, you may either run the script OR do the work inline. Use your judgment: complex phases (Blender assembly, FCPXML export, YOLO, VAD, scene detection, screen sync) benefit from the scripts; simpler phases (setup, scan, audio extraction, cleanup) are often easier inline.
+Reference implementations live in `scripts/` (relative to this SKILL.md). **Scripts are NOT mandatory** — they exist as tested reference implementations. For any phase, you may either run the script OR do the work inline. Use your judgment: complex phases (YOLO, VAD, scene detection, screen sync) benefit from the scripts; simpler phases (setup, scan, audio extraction, cleanup) are often easier inline.
 
 All scripts follow the same interface: `python3 scripts/<name>.py <project_root> [--flags]`, read/write `footage_manifest.json`, print JSON to stdout, exit 0/1.
 
@@ -53,13 +53,13 @@ All scripts follow the same interface: `python3 scripts/<name>.py <project_root>
 
 Check dependencies and initialize the project.
 
-**Critical deps** (abort if missing): `ffmpeg`, `ffprobe`, Blender ≥ 4.x, `ultralytics`, `cv2`, `numpy`, `deep-filter` (DeepFilterNet CLI)
+**Critical deps** (abort if missing): `ffmpeg`, `ffprobe`, `ultralytics`, `cv2`, `numpy`, `deep-filter` (DeepFilterNet CLI), `npx` (Remotion rendering)
 **Required** (warn): `librosa`, `scipy`, `pydub`, `torch`, `PIL`
 **Required for default vision backend** (warn if missing): `google.genai` (Gemini Flash — Phase 9 default)
 **Optional** (note): `google-cloud-speech`, `elevenlabs`, `manim`, `npx`, `whisper`, `silero_vad`
 
 **Project directory structure** — create under project root:
-`raw/`, `audio/denoised/`, `frames/`, `analysis/{transcripts,vad,pitch,scenes,yolo,vision}/`, `sfx/`, `music/`, `animations/`, `thumbnails/`, `blender/`, `exports/`, `units/`, `tmp/`
+`raw/`, `audio/denoised/`, `frames/`, `analysis/{transcripts,vad,pitch,scenes,yolo,vision}/`, `sfx/`, `music/`, `animations/`, `thumbnails/`, `renders/`, `exports/`, `units/`, `tmp/`
 
 Initialize `footage_manifest.json` per `references/manifest-schema.md`. Copy `templates/style_config_default.json` → `style_config.json`. Set `project.source_files` and `project.hint` from user input.
 
@@ -84,7 +84,7 @@ deep-filter audio/<clip_id>.wav --output-dir audio/denoised/
 ffmpeg -i audio/denoised/<clip_id>.wav -ar 16000 audio/denoised/<clip_id>_16k.wav
 ```
 
-**Step 4 — Mux denoised audio back into video files.** This replaces the noisy original audio so that every downstream consumer (studio preview, NLE, renders) uses clean audio without extra logic:
+**Step 4 — Mux denoised audio back into video files.** This replaces the noisy original audio so that every downstream consumer (studio preview, Remotion renders) uses clean audio without extra logic:
 ```
 # Remove the symlink, replace with muxed file
 rm raw/<filename>
@@ -211,7 +211,7 @@ Selection criteria (in order): completeness of thought → delivery quality (con
 
 #### Step 2: Build Global Timeline
 
-Build a **multi-track global timeline** from selected clips. This is the universal format that all exporters (FCPXML, Blender, Remotion) read from. See `references/manifest-schema.md` for the full schema.
+Build a **multi-track global timeline** from selected clips. This is the universal format that Remotion compositions read from. See `references/manifest-schema.md` for the full schema.
 
 **Tracks:**
 - `main` (video): Primary footage clips in narrative order, with in/out points, crop keyframes
@@ -272,7 +272,7 @@ Tell the user: "Studio running at http://localhost:5173"
 - **Drag between units**: Move a clip (or split piece) from one unit to another
 - **Delete chunk**: Mark a time range within a clip as deleted. Exporter skips these ranges. Deleted chunks are recoverable (remove from `deleted_ranges`)
 
-**Trim enforcement:** The FCPXML exporter hard-clamps all clip references to the trim range. If any timeline reference falls outside the trim, the exporter REJECTS with an error — not silently clips. `deleted_ranges` are similarly enforced. Phase 18 validation catches violations before export. See `references/studio-instruction-protocol.md` for the data model.
+**Trim enforcement:** The Remotion composition enforces all clip references to the trim range. If any timeline reference falls outside the trim, Phase 18 validation REJECTS with an error — not silently clips. `deleted_ranges` are similarly enforced. See `references/studio-instruction-protocol.md` for the data model.
 
 **Animation flow checkbox:** Per-unit checkbox "Needs Animation". When checked:
 1. The unit's footage is marked as *reference* (not content to render directly)
@@ -558,7 +558,7 @@ Music sources (in order of preference):
 1. **User provides a track** — royalty-free from YouTube Audio Library, Artlist, Epidemic Sound, etc.
 2. **Lyria 2 on Vertex AI** — GA API, generates 30-second instrumental WAV at 48kHz from a text prompt. Stitch multiple segments for full video. Uses existing GCP project.
 3. **Lyria RealTime via Gemini API** — WebSocket streaming, captures longer continuous tracks. Experimental.
-4. **Skip music in pipeline** — user adds music in NLE. Ducking keyframe data is still written to manifest.
+4. **Skip music in pipeline** — user adds music manually. Ducking keyframe data is still written to manifest.
 
 For any music source: create ducking keyframes from VAD data — lower volume during speech, raise during silences/transitions. Fade in/out at track boundaries. **Ask user to approve style.** Different units can have different music styles. See `references/sfx-music-generation.md`.
 
@@ -584,44 +584,35 @@ Read all unit manifests from `units/*/footage_manifest.json`. Collect updated cl
 - Use `ffprobe` to verify actual durations — do not trust unit manifest values blindly
 - Trim ranges and deleted_ranges from the edit_manifest MUST be applied — the exporter enforces these but the merge should respect them too
 
-### Phase 17: Build NLE Projects
+### Phase 17: Render with Remotion
 
-**Ask user which NLE output(s) they want:**
-- **Blender** (headless .blend generation — default)
-- **FCPXML** (imports into DaVinci Resolve, Final Cut Pro, Premiere)
-- **Both**
+Build and render the final video using Remotion. Each unit is a Remotion composition; the master composition stitches all units with inter-unit transitions.
 
-#### Option A: Blender
+**Per-unit rendering:**
 ```bash
-python3 scripts/build_blender_project.py <project_root>
+npx remotion render src/index.tsx UnitComposition \
+  --props='{"specPath": "units/unit_001/composition_spec.json"}' \
+  --output="renders/unit_001.mp4" \
+  --codec=h264 --concurrency=50%
 ```
-Generates .blend files for all formats (16:9 long, 9:16 long, 9:16 shorts). Blender path: `/Applications/Blender.app/Contents/MacOS/Blender`.
 
-#### Option B: FCPXML (DaVinci Resolve / FCP / Premiere)
+**Master composition** (all units sequenced):
 ```bash
-python3 scripts/export_fcpxml.py <project_root> [--formats 16x9,9x16,shorts]
+npx remotion render src/index.tsx MasterComposition \
+  --output="renders/final.mp4" \
+  --codec=h264 --concurrency=50%
 ```
-Generates FCPXML 1.9 files in `exports/`. For 9:16 format, crop keyframes are encoded as timeline markers (apply manually in NLE). See `references/nle-export-formats.md`.
 
-**Critical FCPXML rules** (see `references/nle-export-formats.md` for full details):
+**Output formats:**
+- 16:9 long-form (1920x1080, 30fps) — primary
+- 9:16 long-form (1080x1920, 30fps) — uses crop keyframes from timeline
+- 9:16 shorts (extracted key segments, < 60s each)
 
-**Timing:**
-- **Frame boundary rule**: ALL time values (`offset`, `start`, `duration`) MUST be exact multiples of `frameDuration`. For 29.97fps: use `N*1001/30000s`. Violating this causes "not on an edit frame boundary" import errors.
-- **Spine offsets**: Accumulate integer frame counts sequentially — never round floats independently (causes 1-frame overlaps)
+**Composition is data-driven:** Remotion reads `composition_spec.json` (generated in Phase 14) containing clip references, VFX effects, transitions, SFX layers, music, and typography. No editorial decisions in Remotion code — all decisions live in the spec. See `references/vfx-pipeline-plan.md` for the full composition architecture.
 
-**Media:**
-- **GoPro timecodes**: GoPro embeds clock timecodes in `tmcd` stream. Remux to strip: `ffmpeg -i in.mp4 -map 0:v:0 -map 0:a:0 -c copy -write_tmcd 0 out.mp4` — then use `start="0/1s"`
-- **Media consolidation**: DaVinci's clip search is NOT recursive — all media must be in a single flat `exports/media/` directory
+**VFX effects available:** kinetic typography (Devanagari-first), Ken Burns zoom, background blur, rotoscoping, speed ramping, color grading, transitions (whip pan, mask reveal, glitch, dissolve), SVG illustrations synced to content. See `references/vfx-pipeline-plan.md`.
 
-**Audio:**
-- **DaVinci Resolve ignores volume keyframes on import.** This is a known longstanding bug. Ducking keyframes are written for FCP (which respects them) and stored in manifest for manual DaVinci application. Audio transitions are also ignored by Resolve.
-- Volume `<keyframe>` values are **linear gain** (0.0-1.0), NOT dB. Convert: `gain = 10^(dB/20)`
-- Structure: `<adjust-volume>` → `<param name="volume">` → `<keyframeAnimation>` → `<keyframe>` children. `adjust-volume` is a child of `<audio>` element, not `<asset-clip>`.
-
-**Connected clips (SFX):**
-- SFX as connected clips: `lane="1"` (above) or `lane="-1"` (below primary storyline)
-- `offset` on connected clips is relative to the **parent spine's timeline**, not the parent clip
-- SFX placement data MUST include concrete `after_segment` references (not null)
+**Audio:** ElevenLabs for SFX (5-layer system) and music (Eleven Music API with composition plans). All audio is mixed in the Remotion composition — SFX coupled to VFX events, music with VAD-driven ducking keyframes.
 
 ### Phase 18: Sync Validation + Trim Enforcement
 
@@ -657,7 +648,7 @@ See `references/youtube-metadata-spec.md`.
 
 ### Phase 20: Cleanup
 
-Remove `tmp/` directory. Optionally remove: `frames/`, `analysis/` (manifest has the data), `units/` (use `--keep-units` to preserve), `exports/`. Always preserve: `raw/` symlinks, `blender/`, `footage_manifest.json`, `style_config.json`.
+Remove `tmp/` directory. Optionally remove: `frames/`, `analysis/` (manifest has the data), `units/` (use `--keep-units` to preserve). Always preserve: `raw/` symlinks, `renders/`, `footage_manifest.json`, `style_config.json`.
 
 ## User Approval Gates
 
@@ -682,7 +673,7 @@ The manifest tracks `pipeline_state.completed_phases` and boolean flags `units_d
 
 For detailed technical information, read from `references/`:
 - `manifest-schema.md` — Complete JSON manifest schema
-- `blender-vse-api.md` — Blender headless VSE scripting
+- `vfx-pipeline-plan.md` — VFX composition pipeline: Remotion rendering, ElevenLabs audio, editorial beats
 - `crop-easing-guide.md` — 9:16 crop strategies + easing curves
 - `asr-chirp-setup.md` — ASR engine setup and fallback chain
 - `gemini-video-understanding.md` — Gemini Flash video analysis API, cost, capabilities and limits
@@ -691,7 +682,7 @@ For detailed technical information, read from `references/`:
 - `screen-recording-sync.md` — Audio cross-correlation sync
 - `short-form-workflow.md` — Short-form content extraction
 - `youtube-metadata-spec.md` — YouTube upload metadata format
-- `nle-export-formats.md` — Supported NLE export formats + DaVinci Resolve import guide
+- `nle-export-formats.md` — (deprecated) Legacy NLE export reference, kept for historical context
 - `studio-instruction-protocol.md` — How Claude interprets markers, instructions, trim/split/drag/delete operations
 - `pipeline-runtime-notes.md` — Operational findings: dependency gotchas, Chirp 2 location constraints, manifest format expectations between phases
 - `remotion-compositing.md` — Remotion as full compositing engine: FullVideo pattern, rotoscoping (rembg + VP9 alpha), VFX overlay system, logo animation, motion typography
