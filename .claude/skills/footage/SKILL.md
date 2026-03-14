@@ -300,6 +300,38 @@ Wait for the session to end (`edit_manifest.json` session.active = false). Then:
 
 ### Agent Spawn Protocol
 
+#### Main Agent Integrity Rules
+
+The main agent (the one spawning subagents) is subject to the SAME quality standards as subagents. These rules exist because the main agent has historically been the weakest link — downgrading user instructions before they reach subagents, optimizing for fast completion over correctness.
+
+**1. NEVER rewrite or downgrade user instructions.** Pass the user's words VERBATIM to the subagent. If the user says "rotoscope," the agent prompt says "rotoscope" — not "rotoscope-style effect" or "approximate with CSS glow." If a task seems too hard, the subagent must fail honestly. The main agent does not get to pre-decide what's feasible.
+
+**2. ALWAYS present a dry-run plan BEFORE spawning.** Show the user: "Here's what I'm about to tell the agent to do: [summary]." Wait for approval. This is the cheapest possible check — 10 seconds of user review prevents hours of wasted agent work producing garbage. Skip this only if the user has explicitly said to proceed autonomously.
+
+**3. ALWAYS include the Agent Execution Protocol in the spawn prompt.** Reference the dry-run plan → execute → quality gates → failure protocol flow. Tell the agent which quality gates apply. If you don't, the agent will skip them.
+
+**4. NEVER tell an agent "keep it simple," "use placeholders," or "approximate is fine" for user-facing deliverables.** These phrases are the main agent giving itself permission to produce garbage. If something genuinely can't be done (missing dependency, no API access), the agent should discover that and report failure — not be pre-told to produce a lesser version.
+
+**5. ALWAYS reference the merge queue protocol.** Tell the agent to write results to `units/{unit_id}/agent_output.json`, not to shared manifest files directly.
+
+**6. Include ALL relevant reference docs.** If the task involves animations, include `references/animation-style-config.md`. If it involves effects, include what tools are available (`rembg`, SAM2, ffmpeg filters, etc.). The agent can't use tools it doesn't know exist.
+
+**Anti-pattern example (what NOT to do):**
+```
+# BAD — main agent rewrote "rotoscope" to "glow effect"
+"Keep animations practical — use CSS/SVG for effects, don't try to do actual ML rotoscoping.
+A glow/outline effect around the person's position is fine."
+
+# GOOD — pass user's words, let agent figure it out or fail
+"User instruction: 'Rotoscope the person in marker m1 and then show the logo of claude
+and blender and then final cutpro coming from behind.'
+This requires actual person segmentation — use rembg, SAM2, or similar to extract
+a person mask. The logos must layer BETWEEN the background and the segmented person.
+If segmentation tools are unavailable, report failure — do NOT approximate with CSS effects."
+```
+
+---
+
 When spawning parallel agents for per-unit work (Phases 13–15), each agent MUST receive the following context. This is not optional — agents without full context produce isolated, inconsistent work.
 
 **Read-only context (every agent gets all of this):**
@@ -323,25 +355,68 @@ When spawning parallel agents for per-unit work (Phases 13–15), each agent MUS
 
 **Structural fluency:** Each agent must understand the manifest schema, edit_manifest schema, marker semantics, trim/split mechanics, and the universal timeline format as working knowledge — not as "here's some context" but as the vocabulary it uses to make correct mutations.
 
+#### Merge Queue — Shared File Coordination
+
+**Problem:** Multiple concurrent agents reading, modifying, and writing the same file (e.g., `edit_manifest.json`, `footage_manifest.json`) causes last-write-wins data loss. This applies to ANY shared file, not just manifests.
+
+**Rule: Agents NEVER write to shared files directly.** Instead, each agent writes its mutations to a unit-scoped output file, and the main agent merges sequentially.
+
+**Protocol:**
+
+1. **Agent writes to scoped file.** Each agent writes its results to:
+   ```
+   units/{unit_id}/agent_output.json
+   ```
+   This file contains ONLY the agent's mutations for its assigned unit — clip_edits, added_media, markers, word_cuts, instructions updates, claude_notes, new file paths, etc. Schema mirrors the relevant section of `edit_manifest.json`.
+
+2. **Agent writes assets to unit directory.** All generated files (animations, SFX, renders) go into `units/{unit_id}/` subdirectories. No agent writes to project-root-level directories.
+
+3. **Main agent merges sequentially.** After agents complete (or as they complete), the main agent:
+   - Reads `edit_manifest.json` once
+   - Reads each `units/{unit_id}/agent_output.json`
+   - Applies each agent's mutations to the in-memory manifest (one unit at a time — no conflicts since scopes don't overlap)
+   - Writes `edit_manifest.json` once
+   - Same for `footage_manifest.json` if agents produced new clips
+
+4. **Conflict detection.** If two agents somehow touch the same data (e.g., both modify a shared clip due to a clip move), the main agent detects the conflict and asks the user. This shouldn't happen if mutation scopes are respected, but the merge step checks anyway.
+
+**What this means in practice:**
+- When spawning an agent, tell it: "Write your results to `units/{unit_id}/agent_output.json`. Do NOT modify `edit_manifest.json` or `footage_manifest.json` directly."
+- The main agent is the ONLY writer to shared manifest files
+- If only one agent is running (not parallel), it MAY write directly to the manifest — the merge queue is specifically for concurrent execution
+
 #### Agent Execution Protocol
 
 Agents MUST NOT take the path of least resistance. When uncertain, FAIL — do not produce garbage and claim success. Every agent follows this execution flow:
 
-**Step 1 — Dry-run plan.** Before doing ANY work, the agent writes a plan stating:
+**Step 0 — Research.** Before planning, the agent MUST build situational awareness. This is not optional — an agent that skips research will produce context-free garbage.
+
+- **Read SKILL.md** — understand the full pipeline, the manifest schemas, the phase you're operating in, the quality gates, the failure protocol. This is your operating manual.
+- **Understand the phase** — which pipeline phase is this work part of? What are the inputs and outputs? What are the constraints?
+- **Research the requirements** — if the user says "rotoscope," research what rotoscoping actually requires (person segmentation, mask extraction, layer compositing). If the user says "ducking," research how audio ducking works. Don't guess — look it up. Use web search, read docs, check what tools are installed.
+- **Read the manifest state** — read `edit_manifest.json` and `footage_manifest.json` to understand the current state: what clips exist, what edits have been made, what markers are placed, what instructions the user wrote. Read the actual data, don't assume.
+- **Check available tools** — what's installed? (`rembg`, `SAM2`, `ffmpeg` filters, Remotion, Manim, etc.) What APIs are configured? Don't assume a tool is unavailable without checking.
+- **Read existing code patterns** — if there's existing animation code, match its patterns. If there's existing manifest mutations, follow the same schema.
+
+**Step 1 — Plan with pass conditions.** Based on research, write a plan stating:
 - What it will do (specific actions, not vague descriptions)
-- Which tools/APIs it will use (e.g., "Lyria 2 on Vertex AI", NOT "generate music")
-- What the expected output looks like (file format, duration, placement)
-- What it will NOT do (explicit anti-patterns from SKILL.md and USER-SKILL.md)
+- Which tools/APIs it will use (e.g., "rembg for person segmentation", NOT "some kind of effect")
+- What the expected output looks like (file format, duration, placement, how it integrates with existing content)
+- **Pass conditions** — define what "done" looks like BEFORE starting. These are the agent's own acceptance criteria, derived from the user's instructions + the phase quality gates. Example: "PASS if: person is segmented from background with clean edges, logos render behind the person layer, output is alpha-channel WebM at 1920x1080, manifest updated with overlay_at_marker reference."
+- What it will NOT do (explicit anti-patterns from SKILL.md)
+- Fallback plan if the primary approach fails
 
 The plan is written to `claude_notes[unitId]` so the main agent and user can review it.
 
-**Step 2 — Execute.** Carry out the plan. If something fails or the chosen approach doesn't work, do NOT silently switch to an easier but wrong approach. Instead, update `claude_notes` with the failure and try the next correct alternative from the plan.
+**Step 2 — Execute.** Carry out the plan. If something fails or the chosen approach doesn't work, do NOT silently switch to an easier but wrong approach. Instead, update `claude_notes` with the failure and try the next correct alternative from the fallback plan.
 
-**Step 3 — Quality gates.** Run ALL quality gates for the phase (see below). Every gate must pass. Results are written to `claude_notes[unitId]` with pass/fail status per gate.
+**Step 3 — Verify pass conditions.** Check EVERY pass condition defined in Step 1, plus ALL quality gates for the phase (see below). Every condition must pass. For each condition, write the actual check performed and the result — not just "PASS." Example: "PASS — ffprobe confirms 1920x1080 VP8+alpha WebM, 4.0s duration" or "FAIL — rembg not installed, person segmentation could not be performed."
+
+Results are written to `claude_notes[unitId]` with pass/fail status per condition.
 
 **Step 4 — Handoff.** Report results to the main agent:
-- If ALL gates pass: report success with gate results
-- If ANY gate fails: report FAILURE with details of what failed and why. Mark unit `status: "needs_review"`. Do NOT claim success with bad output.
+- If ALL conditions pass: report success with verification results
+- If ANY condition fails: report FAILURE with details of what failed and why. Mark unit `status: "needs_review"`. Do NOT claim success with bad output. Do NOT produce a "simplified version" — fail cleanly.
 
 #### Quality Gates by Phase
 
@@ -401,6 +476,8 @@ When manifest or user indicates animations needed:
 - Generate Manim (math/diagrams) or Remotion (motion graphics) code
 - **Read `style_config.json` and apply colors, fonts, dimensions**
 - Render and add to unit manifest. **User approves each animation.**
+
+**Full-video compositing:** When the user wants overlays, VFX, or rotoscoping across the entire source footage (not just isolated clips), use Remotion as a full compositing engine. See `references/remotion-compositing.md` for the FullVideo pattern, rotoscoping pipeline (rembg + WebM VP9 alpha), VFX overlay system, logo animation with motion typography, and content-aware effect mapping.
 
 #### Phase 14: SFX Generation
 Identify SFX candidates: cut/transition points (high confidence), speech pauses > 0.5s (medium), pitch emphasis changes (medium). **Never auto-place** comedic timing or emotional beats. Run `--dry-run` first to show user the plan. After approval, generate via ElevenLabs `text_to_sound_effects`. See `references/sfx-music-generation.md`. **User approves placement.**
@@ -548,6 +625,7 @@ For detailed technical information, read from `references/`:
 - `nle-export-formats.md` — Supported NLE export formats + DaVinci Resolve import guide
 - `studio-instruction-protocol.md` — How Claude interprets markers, instructions, trim/split/drag/delete operations
 - `pipeline-runtime-notes.md` — Operational findings: dependency gotchas, Chirp 2 location constraints, manifest format expectations between phases
+- `remotion-compositing.md` — Remotion as full compositing engine: FullVideo pattern, rotoscoping (rembg + VP9 alpha), VFX overlay system, logo animation, motion typography
 
 ## Key Rules
 

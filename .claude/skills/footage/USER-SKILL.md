@@ -166,6 +166,50 @@ FCPXML export expects this exact structure from merge:
 
 ---
 
+## Remotion Full-Video Compositing (Phase 13)
+
+### Rotoscoping with rembg
+- Use Python API (`from rembg import remove`), NOT the CLI entry point (broken on Python 3.14+)
+- `u2net_human_seg` model: ~0.5s/frame, good for people, indoor
+- Output as WebM VP9 alpha: `ffmpeg -c:v libvpx-vp9 -pix_fmt yuva420p -crf 20 -b:v 0`
+- ~3MB WebM for 4s of 1920x1080 — far better than PNG sequences (~240MB)
+- Use `<OffthreadVideo transparent>` in Remotion to respect alpha channel
+
+### Logo positioning with rotoscope
+- **Critical mistake to avoid**: logos placed directly behind the person's body are INVISIBLE (occluded by the rotoscope mask)
+- ALWAYS extract a frame from the rotoscope WebM first to see the actual silhouette:
+  ```
+  ffmpeg -i person_rotoscope.webm -vf "select=eq(n\,50)" -frames:v 1 -update 1 mask_check.png
+  ```
+- Position logos at frame edges where background is visible (corners, gaps between arms/body)
+- Use explicit target coordinates, not angle-based circle placement — much easier to control
+
+### SVG logo gotcha
+- `fill="currentColor"` in SVGs resolves to BLACK when loaded via Remotion's `<Img>` component
+- Must replace with actual brand color (e.g., `fill="#D97706"`) before using
+- CSS filter color transitions (`sepia() hue-rotate() saturate() brightness()`) work on all image formats — operates on rendered pixels
+
+### Content-aware VFX
+- Extract thumbnails at 5s intervals to understand what's happening in the footage
+- Map content segments to frame ranges (intro talking, screen recording, rendered output, etc.)
+- Assign appropriate effects per segment type — don't just random effects everywhere
+- One VFXOverlay component with frame-range-gated sub-effects is cleaner than multiple Sequences
+
+### Verification workflow
+- ALWAYS render still frames before presenting anything visual to the user:
+  ```
+  npx remotion still src/index.ts FullVideo out/check.png --frame=50
+  ```
+- Check multiple frames across different effects (not just frame 0)
+- `npx remotion studio` for interactive preview, but stills are the ground truth for what renders look like
+
+### Source files in public/
+- `staticFile()` references `public/` directory
+- Remotion copies `public/` to temp bundle dir during render — **symlinks break**
+- Must copy actual files into `public/`, not symlink
+
+---
+
 ## Background Agent Quality Gates
 
 Background agents for SFX/music generation MUST:
