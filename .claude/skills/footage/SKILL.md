@@ -283,9 +283,9 @@ Tell the user: "Studio running at http://localhost:5173"
 
 **Teleprompter:** Studio generates a QR code in the header. Scanning opens `http://<local-ip>:5173/teleprompter/<unit_id>` on any local device. Shows the narration script (from Claude-generated content or user-written text in instructions) with configurable auto-scroll speed. Used when user needs to record new voiceover/narration for a unit.
 
-**Versioning (git-based):** Each sync auto-commits `edit_manifest.json` to git. Current version = what's used for building. Previous versions browsable via git history. Restore = checkout specific version of edit_manifest. In studio, current version plays as default; previous versions accessible but clearly marked as history. Per-unit: clear indicator of which clips/version are active for the build.
+**Versioning (git-based):** Each operation auto-commits `edit_manifest.json` to git. Current version = what's used for building. Previous versions browsable via git history. Restore = checkout specific version of edit_manifest. In studio, current version plays as default; previous versions accessible but clearly marked as history. Per-unit: clear indicator of which clips/version are active for the build.
 
-**Sync**: 30s auto-sync + manual Ctrl+S, writes `edit_manifest.json`. Each sync triggers `git add edit_manifest.json && git commit`.
+**Server-authoritative editing:** All edit manifest mutations go through the Express server's `PATCH /api/edit-manifest` endpoint. The server reads the file from disk, applies the operation atomically, and writes back. Both the web UI and Claude agents use this same endpoint — no direct file writes to `edit_manifest.json`. This eliminates race conditions between the studio and concurrent agents.
 
 #### Post-Session Processing
 
@@ -312,7 +312,7 @@ The main agent (the one spawning subagents) is subject to the SAME quality stand
 
 **4. NEVER tell an agent "keep it simple," "use placeholders," or "approximate is fine" for user-facing deliverables.** These phrases are the main agent giving itself permission to produce garbage. If something genuinely can't be done (missing dependency, no API access), the agent should discover that and report failure — not be pre-told to produce a lesser version.
 
-**5. ALWAYS reference the merge queue protocol.** Tell the agent to write results to `units/{unit_id}/agent_output.json`, not to shared manifest files directly.
+**5. ALWAYS reference the edit manifest operations API.** If the studio server is running (`curl -s http://localhost:3001/api/status`), tell the agent to use `PATCH http://localhost:3001/api/edit-manifest` with typed operations. If the server is not running, fall back to writing results to `units/{unit_id}/agent_output.json`. Agents NEVER write to `edit_manifest.json` directly.
 
 **6. Include ALL relevant reference docs.** If the task involves animations, include `references/animation-style-config.md`. If it involves effects, include what tools are available (`rembg`, SAM2, ffmpeg filters, etc.). The agent can't use tools it doesn't know exist.
 
@@ -355,13 +355,65 @@ When spawning parallel agents for per-unit work (Phases 13–15), each agent MUS
 
 **Structural fluency:** Each agent must understand the manifest schema, edit_manifest schema, marker semantics, trim/split mechanics, and the universal timeline format as working knowledge — not as "here's some context" but as the vocabulary it uses to make correct mutations.
 
-#### Merge Queue — Shared File Coordination
+#### Edit Manifest Operations API
 
-**Problem:** Multiple concurrent agents reading, modifying, and writing the same file (e.g., `edit_manifest.json`, `footage_manifest.json`) causes last-write-wins data loss. This applies to ANY shared file, not just manifests.
+**Problem:** Multiple concurrent writers (web UI + Claude agents) to `edit_manifest.json` causes last-write-wins data loss.
 
-**Rule: Agents NEVER write to shared files directly.** Instead, each agent writes its mutations to a unit-scoped output file, and the main agent merges sequentially.
+**Solution:** The studio Express server is the **single writer** to `edit_manifest.json`. All mutations go through `PATCH /api/edit-manifest` with typed operations. The server reads the file, applies the operation atomically, writes back. Node.js single-thread guarantee means concurrent requests are processed sequentially — no races.
 
-**Protocol:**
+**Operation format:**
+```bash
+curl -X PATCH http://localhost:3001/api/edit-manifest \
+  -H "Content-Type: application/json" \
+  -d '{"operation": {"type": "update_unit_instructions", "unit_id": "unit_001", "instructions": "..."}}'
+```
+
+**Available operation types:**
+- `update_unit_order` — `{ order: string[] }`
+- `update_unit_instructions` — `{ unit_id, instructions }`
+- `update_unit_markers` — `{ unit_id, markers }`
+- `update_unit_word_cuts` — `{ unit_id, cuts }`
+- `toggle_discard_clip` — `{ unit_id, clip_id }`
+- `add_unit_media` — `{ unit_id, media: { path, filename, type } }`
+- `remove_unit_media` — `{ unit_id, media_index }`
+- `insert_unit` — `{ unit_id, unit, after_index }`
+- `delete_unit` — `{ unit_id }`
+- `update_clip_trim` — `{ unit_id, clip_id, in_point, out_point, duration }`
+- `clear_clip_trim` — `{ unit_id, clip_id }`
+- `split_clip_at` — `{ unit_id, clip_id, time }`
+- `remove_split` — `{ unit_id, clip_id, index }`
+- `add_deleted_range` — `{ unit_id, clip_id, start, end, reason }`
+- `remove_deleted_range` — `{ unit_id, clip_id, index }`
+- `move_clip_to_unit` — `{ clip_id, from_unit_id, to_unit_id }`
+- `set_claude_note` — `{ unit_id, notes }`
+- `end_session` — `{}`
+- `batch` — `{ operations: EditOperation[] }` (atomic batch of multiple operations)
+
+**Response:** `{ ok: true, manifest: <full EditManifest> }` on success, `{ ok: false, error: "..." }` on failure.
+
+**Initialization:** `POST /api/edit-manifest/init` — creates edit manifest from footage manifest if it doesn't exist, returns existing if it does.
+
+**Agent usage (when studio server is running):**
+```bash
+# Single operation
+curl -X PATCH http://localhost:3001/api/edit-manifest \
+  -H "Content-Type: application/json" \
+  -d '{"operation": {"type": "set_claude_note", "unit_id": "unit_001", "notes": "Generated logo reveal"}}'
+
+# Batch multiple operations atomically
+curl -X PATCH http://localhost:3001/api/edit-manifest \
+  -H "Content-Type: application/json" \
+  -d '{"operation": {"type": "batch", "operations": [
+    {"type": "add_unit_media", "unit_id": "unit_001", "media": {"path": "units/unit_001/animations/logo.webm", "filename": "logo.webm", "type": "video"}},
+    {"type": "set_claude_note", "unit_id": "unit_001", "notes": "Logo reveal animation generated"}
+  ]}}'
+```
+
+**Fallback (when studio server is NOT running):** Agents write to `units/{unit_id}/agent_output.json` and the main agent merges sequentially. This is the legacy merge queue — use it only when the HTTP API is unavailable.
+
+#### Merge Queue — Fallback for Offline Agents
+
+When the studio server is not running (e.g., pure CLI pipeline execution without a studio session), agents cannot use the HTTP API. In this case:
 
 1. **Agent writes to scoped file.** Each agent writes its results to:
    ```
@@ -378,12 +430,9 @@ When spawning parallel agents for per-unit work (Phases 13–15), each agent MUS
    - Writes `edit_manifest.json` once
    - Same for `footage_manifest.json` if agents produced new clips
 
-4. **Conflict detection.** If two agents somehow touch the same data (e.g., both modify a shared clip due to a clip move), the main agent detects the conflict and asks the user. This shouldn't happen if mutation scopes are respected, but the merge step checks anyway.
+4. **Conflict detection.** If two agents somehow touch the same data (e.g., both modify a shared clip due to a clip move), the main agent detects the conflict and asks the user.
 
-**What this means in practice:**
-- When spawning an agent, tell it: "Write your results to `units/{unit_id}/agent_output.json`. Do NOT modify `edit_manifest.json` or `footage_manifest.json` directly."
-- The main agent is the ONLY writer to shared manifest files
-- If only one agent is running (not parallel), it MAY write directly to the manifest — the merge queue is specifically for concurrent execution
+**Rule:** When spawning agents, check if the studio server is running (`curl -s http://localhost:3001/api/status`). If running, tell agents to use the HTTP API. If not, tell agents to write to `units/{unit_id}/agent_output.json`.
 
 #### Agent Execution Protocol
 
@@ -478,6 +527,26 @@ When manifest or user indicates animations needed:
 - Render and add to unit manifest. **User approves each animation.**
 
 **Full-video compositing:** When the user wants overlays, VFX, or rotoscoping across the entire source footage (not just isolated clips), use Remotion as a full compositing engine. See `references/remotion-compositing.md` for the FullVideo pattern, rotoscoping pipeline (rembg + WebM VP9 alpha), VFX overlay system, logo animation with motion typography, and content-aware effect mapping.
+
+**Registering composited renders:** After rendering a full composited video, register it in `edit_manifest.json` as an `added_media` entry with `placement: "composited"`. The studio shows these in a "Composited Output" section with version history — each re-render gets a new entry with a timestamp, and previous renders are accessible via a collapsible history. Example:
+
+```json
+{
+  "filename": "full_composited.mp4",
+  "path": "units/unit_002/animations/unit002_overlays/out/full_composited.mp4",
+  "type": "video",
+  "placement": "composited",
+  "codec_video": "h264",
+  "duration_seconds": 101.75,
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "notes": "Source + rotoscope + logos + VFX overlays",
+  "added_at": "2026-03-14T18:00:00.000Z"
+}
+```
+
+Each subsequent render adds a new entry (don't replace the old one). The studio sorts by `added_at` and shows the latest as the primary playable, with older versions in a collapsible history.
 
 #### Phase 14: SFX Generation
 Identify SFX candidates: cut/transition points (high confidence), speech pauses > 0.5s (medium), pitch emphasis changes (medium). **Never auto-place** comedic timing or emotional beats. Run `--dry-run` first to show user the plan. After approval, generate via ElevenLabs `text_to_sound_effects`. See `references/sfx-music-generation.md`. **User approves placement.**

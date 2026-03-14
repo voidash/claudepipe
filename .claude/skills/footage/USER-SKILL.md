@@ -36,7 +36,17 @@ Update this file when you discover new gotchas, confirm or invalidate assumption
 ### NLE Operations in Studio
 - Trim, split, drag-between-units, delete-chunk — all data mutations on edit_manifest
 - Source files never touched
-- Versioning via git auto-commit on each sync
+- Versioning via git auto-commit on each operation
+
+### Server-Authoritative Edit Manifest (2026-03-14)
+- All edit_manifest.json mutations go through `PATCH /api/edit-manifest` on the Express server (port 3001)
+- Server reads file, applies operation atomically, writes back — single writer, no races
+- Web UI sends operations with optimistic local apply + server confirmation
+- Claude agents use the same HTTP endpoint when the studio server is running
+- Fallback: when server is NOT running, agents use `units/{unit_id}/agent_output.json` merge queue
+- Old full-document `POST /api/edit-manifest` is deprecated — still works but logs a warning
+- No more dirty tracking, no more 30s sync interval, no more manual Ctrl+S sync
+- Check if server is up: `curl -s http://localhost:3001/api/status`
 
 ---
 
