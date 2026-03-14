@@ -217,51 +217,147 @@ Each element in the clips array represents one source video file.
 }
 ```
 
-## `timeline`
+## `timeline` — Universal Multi-Track Format
 
-The editorial timeline built from clip segments.
+The global timeline is the **single representation** that all exporters (FCPXML, Blender, Remotion) read from. It is multi-track: main video, overlays, SFX, music. Clips on the timeline are *references* to source clips — a source clip can appear multiple times (if split).
 
 ```json
 {
-  "segments": [
+  "fps": 30,
+  "resolution": {"w": 1920, "h": 1080},
+  "total_duration_seconds": 600.0,
+  "tracks": [
     {
-      "id": "seg_001",
-      "clip_id": "clip_001",
-      "in_point": 0.0,
-      "out_point": 30.0,
-      "duration": 30.0,
-      "include": true,
-      "interest_score": 0.85,
-      "tags": ["intro", "talking_head"],
-      "notes": "",
-      "crop_16_9": {
-        "x": 0, "y": 0, "w": 1920, "h": 1080
-      },
-      "crop_9_16": {
-        "keyframes": [
-          {
-            "time": 0.0,
-            "x": 400, "y": 0, "w": 607, "h": 1080,
-            "easing": "BEZIER | ELASTIC | BOUNCE | BACK | SINE | EXPO | CONSTANT"
-          }
-        ]
-      },
-      "audio_gain_db": 0.0,
-      "speed_factor": 1.0
+      "id": "main",
+      "type": "video",
+      "clips": [
+        {
+          "id": "tc_001",
+          "source_clip_id": "clip_003",
+          "in_point": 5.0,
+          "out_point": 23.5,
+          "trim": {
+            "in": 5.0,
+            "out": 23.5,
+            "original_in": 0.0,
+            "original_out": 45.0
+          },
+          "deleted_ranges": [
+            {"start": 12.0, "end": 15.0, "reason": "dead air"}
+          ],
+          "timeline_start": 0.0,
+          "timeline_end": 15.5,
+          "speed": 1.0,
+          "volume": 1.0,
+          "volume_keyframes": [
+            {"time": 0.0, "value": 1.0, "interp": "linear"}
+          ],
+          "transform": {
+            "x": 0.0, "y": 0.0,
+            "scale": 1.0, "rotation": 0.0
+          },
+          "crop_9_16": {
+            "keyframes": [
+              {
+                "time": 0.0,
+                "x": 400, "y": 0, "w": 608, "h": 1080,
+                "easing": "BEZIER"
+              }
+            ]
+          },
+          "interest_score": 0.85,
+          "tags": ["intro", "talking_head"],
+          "unit_id": "unit_001_intro"
+        }
+      ]
+    },
+    {
+      "id": "overlay",
+      "type": "video",
+      "clips": [
+        {
+          "id": "tc_overlay_001",
+          "source_clip_id": "anim_001",
+          "in_point": 0.0,
+          "out_point": 8.0,
+          "trim": {"in": 0.0, "out": 8.0, "original_in": 0.0, "original_out": 8.0},
+          "deleted_ranges": [],
+          "timeline_start": 23.5,
+          "timeline_end": 31.5,
+          "transform": {"x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0},
+          "unit_id": "unit_002_hooks"
+        }
+      ]
+    },
+    {
+      "id": "sfx",
+      "type": "audio",
+      "clips": [
+        {
+          "id": "tc_sfx_001",
+          "source_clip_id": "sfx_001",
+          "in_point": 0.0,
+          "out_point": 1.0,
+          "timeline_start": 15.3,
+          "timeline_end": 16.3,
+          "volume": 0.5,
+          "unit_id": "unit_001_intro"
+        }
+      ]
+    },
+    {
+      "id": "music",
+      "type": "audio",
+      "clips": [
+        {
+          "id": "tc_music_001",
+          "source_clip_id": "music_001",
+          "in_point": 0.0,
+          "out_point": 60.0,
+          "timeline_start": 0.0,
+          "timeline_end": 60.0,
+          "volume_keyframes": [
+            {"time": 0.0, "value": 0.126, "interp": "linear"},
+            {"time": 5.0, "value": 0.05, "interp": "ease", "reason": "speech_start"},
+            {"time": 35.0, "value": 0.126, "interp": "ease", "reason": "speech_end"}
+          ],
+          "loop": true,
+          "fade_in_seconds": 2.0,
+          "fade_out_seconds": 3.0
+        }
+      ]
     }
   ],
-  "order": ["seg_001", "seg_003", "seg_002"],
   "transitions": [
     {
-      "from_segment": "seg_001",
-      "to_segment": "seg_003",
-      "type": "cut | crossfade | wipe_left | wipe_right | fade_black",
-      "duration_seconds": 0.0
+      "id": "tr_001",
+      "from_clip": "tc_001",
+      "to_clip": "tc_002",
+      "type": "crossfade",
+      "duration_seconds": 0.5
     }
   ],
-  "total_duration_seconds": 600.0
+  "unit_groups": [
+    {
+      "id": "unit_001_intro",
+      "name": "Channel Intro",
+      "timeline_range": {"start": 0.0, "end": 15.5},
+      "clip_ids": ["tc_001"],
+      "status": "approved",
+      "needs_animation": false
+    }
+  ]
 }
 ```
+
+**Clip on timeline vs source clip:** `clips[]` (top-level) are source clips with analysis data. `timeline.tracks[].clips[]` are timeline references that point to source clips via `source_clip_id`. This separation means: source analysis is done once, timeline references can be trimmed/split/reordered independently.
+
+**Trim enforcement:** The `trim` field on each timeline clip defines the valid range. Exporters MUST clamp to this range. `deleted_ranges` are gaps within the trim range that the exporter skips. Phase 18 validates that no clip reference violates these constraints.
+
+**Exporter mapping:**
+- **FCPXML:** tracks → lanes (`main` = spine, `overlay` = lane 1, `sfx` = lane -1, `music` = separate audio), clips → `<asset-clip>`, transitions → `<transition>` elements
+- **Blender VSE:** tracks → channels, clips → strips, transitions → crossfade effects
+- **Remotion:** tracks → `<AbsoluteFill>` layers, clips → `<Sequence>` + `<OffthreadVideo>`, transitions → `<TransitionSeries>`
 
 **Crop math for 9:16:**
 - Source is 16:9 (e.g., 1920x1080)
@@ -429,21 +525,28 @@ The editorial timeline built from clip segments.
 
 ## `units[]`
 
-After decomposition, the main manifest tracks every unit and its directory.
-Each unit directory contains its own `footage_manifest.json` with the **same schema** as the main manifest, scoped to that unit's clips and segments. Existing scripts work unchanged when pointed at a unit directory.
+Units are **logical groupings within the global timeline** — one unit = one concept/topic. After decomposition, the main manifest tracks every unit and its directory. Each unit directory contains its own `footage_manifest.json` (same schema) scoped to that unit's clips.
+
+**Units reference the global timeline** — they don't own copies of timeline data. A unit knows its `timeline_range` and `clip_ids` (which global timeline clips belong to it).
 
 ```json
 {
   "units": [
     {
-      "unit_id": "unit_001_video_intro_talking",
+      "unit_id": "unit_001_video_intro",
       "unit_type": "video | screencast | audio | text_image | animation",
-      "display_name": "Intro Talking Head",
-      "dir": "units/unit_001_video_intro_talking",
-      "source_clip_id": "clip_001",
-      "segment_ids": ["seg_001", "seg_002", "seg_003"],
-      "time_range": {"start": 0.0, "end": 45.0},
-      "total_duration_seconds": 42.5,
+      "display_name": "Channel Intro",
+      "dir": "units/unit_001_video_intro",
+      "topic_cluster_id": "topic_001_intro",
+      "clip_ids": ["tc_001"],
+      "selected_source_clip_id": "clip_003",
+      "deselected_source_clips": [
+        {"clip_id": "clip_001", "reason": "Abruptly stopped at 0:42"},
+        {"clip_id": "clip_002", "reason": "3 false starts in first 10s"}
+      ],
+      "timeline_range": {"start": 0.0, "end": 15.5},
+      "total_duration_seconds": 15.5,
+      "needs_animation": false,
       "status": "pending | in_progress | refined | approved",
       "approved": false
     }
@@ -458,7 +561,7 @@ Each unit directory contains its own `footage_manifest.json` with the **same sch
 - `text_image` — Text / image content; needs Remotion conversion to video
 - `animation` — Placeholder for Manim / Remotion animation inserts
 
-**Unit naming:** `unit_{NNN}_{type}_{slug}` — slug derived from transcript text, segment tags, or source filename.
+**Unit naming:** `unit_{NNN}_{type}_{slug}` — slug derived from transcript content.
 
 ### `unit_info` (inside unit manifests only)
 
@@ -543,6 +646,122 @@ are refined, `merge_units.py` reassembles them into the main manifest.
   "last_updated": "2026-03-13T14:39:00Z"
 }
 ```
+
+## `narrative` (Phase 11 Step 1 output)
+
+```json
+{
+  "topic_clusters": [
+    {
+      "id": "topic_001_intro",
+      "topic": "Channel introduction — who I am, what this channel is about",
+      "clips": [
+        {
+          "clip_id": "clip_001",
+          "selected": false,
+          "reason": "Abruptly stopped at 0:42, incomplete thought"
+        },
+        {
+          "clip_id": "clip_002",
+          "selected": false,
+          "reason": "3 false starts in first 10 seconds, low energy"
+        },
+        {
+          "clip_id": "clip_003",
+          "selected": true,
+          "reason": "Cleanest delivery, no false starts, complete thought, highest energy"
+        }
+      ],
+      "best_clip_id": "clip_003",
+      "proposed_order": 1
+    }
+  ],
+  "story_arc": ["topic_001_intro", "topic_002_problem", "topic_003_demo", "topic_004_conclusion"],
+  "total_selected_clips": 4,
+  "total_deselected_clips": 8
+}
+```
+
+## `edit_manifest.json` — User Edits Layer
+
+The edit manifest stores user edits from the studio session. It is a separate file (`edit_manifest.json`) alongside the footage manifest. The footage manifest has source data + global timeline; the edit manifest has user modifications.
+
+```json
+{
+  "version": "1.0.0",
+  "source_manifest_path": "footage_manifest.json",
+  "created": "2026-03-14T10:00:00Z",
+  "last_synced": "2026-03-14T11:30:00Z",
+  "unit_order": ["unit_001_intro", "unit_002_hooks", "unit_003_demo"],
+  "units": {
+    "unit_001_intro": {
+      "display_name": "Channel Intro",
+      "unit_type": "video",
+      "instructions": "Smooth transition at m1. Cut 5s of dead air around 0:32.",
+      "bundle_clip_ids": ["clip_003"],
+      "added_media": [],
+      "markers": [
+        {
+          "id": "m1",
+          "name": "transition point",
+          "time": 15.3,
+          "frame_number": 459,
+          "position": {"x": 0.6, "y": 0.3},
+          "type": "spatial",
+          "source_clip_id": "clip_003"
+        }
+      ],
+      "clip_edits": {
+        "tc_001": {
+          "trim": {"in": 5.0, "out": 23.5},
+          "deleted_ranges": [
+            {"start": 12.0, "end": 15.0, "reason": "dead air"}
+          ],
+          "splits": [
+            {
+              "at": 18.0,
+              "produces": ["tc_001a", "tc_001b"]
+            }
+          ]
+        }
+      },
+      "clip_moves": [],
+      "word_cuts": [],
+      "discarded_clips": ["clip_001", "clip_002", "clip_004", "clip_005"],
+      "pipeline_requested": false,
+      "needs_animation": false,
+      "is_inserted": false,
+      "status": "reviewing"
+    }
+  },
+  "clip_moves": [
+    {
+      "clip_id": "tc_001b",
+      "from_unit": "unit_001_intro",
+      "to_unit": "unit_003_demo",
+      "moved_at": "2026-03-14T11:25:00Z"
+    }
+  ],
+  "claude_notes": {
+    "unit_001_intro": {
+      "notes": "Applied transition at m1. Removed 5s dead air at 0:32-0:37.",
+      "updated": "2026-03-14T11:20:00Z"
+    }
+  },
+  "session": {
+    "started": "2026-03-14T10:00:00Z",
+    "ended": null,
+    "active": true
+  }
+}
+```
+
+**Key concepts:**
+- `clip_edits` — per-timeline-clip modifications: trims, deleted ranges, splits. Applied to the global timeline before export.
+- `clip_moves` — records of clips dragged between units. Global-level because they cross unit boundaries.
+- `discarded_clips` — source clips deselected by narrative analysis or user. Visible in studio but not on timeline.
+- `markers` — spatial (x,y + time) or temporal (time only) markers on clips. Referenced in instructions. See `studio-instruction-protocol.md`.
+- `needs_animation` — per-unit flag. When true, the unit's footage is reference material and Phase 13 generates animation content for it.
 
 ## Script Interface Convention
 

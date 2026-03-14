@@ -6,6 +6,33 @@ Update this file when you discover new gotchas, confirm or invalidate assumption
 
 ---
 
+## Architecture Principles (2026-03-14)
+
+### Global Timeline with Unit Groups
+- One global multi-track timeline, units are logical views into it
+- Each unit = one concept/topic, NOT one clip
+- Five takes of the same intro → one unit with best take selected, rest deselected with reasons
+- Long clip covering two topics → split into two units at topic boundary
+
+### Parallel Agent Attention
+- Every parallel agent gets FULL global context (all units, all instructions, all agent assignments)
+- Agents only WRITE to their assigned unit
+- Inter-unit work (transitions between units, music, narrative order) stays with main agent
+- This is like attention: each agent attends to everything but only produces output for its position
+
+### Trim Enforcement
+- User-set trims are sacred — enforced by exporter AND Phase 18 validation
+- Non-destructive: original range preserved, trim range is what exporters use
+- deleted_ranges: gaps within trim that exporter skips
+- Enforcement is in the deterministic export script, NOT in Claude's hands
+
+### NLE Operations in Studio
+- Trim, split, drag-between-units, delete-chunk — all data mutations on edit_manifest
+- Source files never touched
+- Versioning via git auto-commit on each sync
+
+---
+
 ## Vision Analysis (Phase 9)
 
 ### Gemini Flash backend

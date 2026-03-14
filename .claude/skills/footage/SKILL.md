@@ -187,61 +187,145 @@ python3 scripts/sync_screen_recording.py <project_root>
 ```
 Cross-correlates audio to find sync offset. **Ask user to choose layout** (PiP, split, switch, side-by-side). See `references/screen-recording-sync.md`.
 
-### Phase 11: Build Manifest Timeline
+### Phase 11: Narrative Analysis + Global Timeline
 
-Assemble all analysis into the timeline. For each clip segment:
-- Assign **interest score** from vision + transcript engagement + pitch variation
-- Generate **crop keyframes** for 9:16 from YOLO bounding boxes + vision crop suggestions
-- Suggest **transitions** between segments (cut for fast pace, crossfade for topic shift, etc.)
-- Set **include/exclude** flags (exclude dead air, false starts, repeated takes)
-- Compute **timeline order** and total duration
+This phase has three steps: understand the content, select the best takes, and build a multi-track global timeline.
 
-Write to `manifest.timeline.{segments, order, transitions, total_duration_seconds}`.
+#### Step 1: Narrative Analysis
 
-### Phase 11b: Decompose into Units
+Use transcripts from all clips to understand what the footage is *about*, not just score it.
 
-Split the timeline into **isolated units of footage**, each in its own directory under `units/`. Each unit gets a self-contained `footage_manifest.json` (same schema as main). This enables:
-- **Parallel agents**: different agents can refine different units simultaneously
-- **Isolation**: changes to one unit cannot destroy another
-- **Typed content**: `video`, `screencast`, `audio` (needs Remotion overlay), `text_image` (needs Remotion conversion), `animation`
+**Topic grouping:** Compare transcript content across clips. Identify clips that cover the same topic (e.g., five intro takes all say "hi I'm X, welcome to my channel"). Use transcript similarity (LLM comparison of content, not string matching) to group clips into **topic clusters**.
 
-**Unit naming**: `unit_{NNN}_{type}_{slug}` — slug from transcript/tags/filename.
+**Best take selection:** Within each topic cluster, select the best take and deselect the rest with explicit reasons:
+- Selected: "take 3 — cleanest delivery, no false starts, complete thought, highest energy"
+- Deselected: "take 1 — abruptly stopped at 0:42", "take 2 — 3 false starts in first 10s", "take 4 — audio clipping at 0:15, lower energy", "take 5 — incomplete, trails off"
 
-**Unit directory** mirrors main project structure: `raw/`, `audio/`, `frames/`, `analysis/`, etc. — using symlinks to source artifacts (not copies). Each unit dir gets its own manifest + symlinked `style_config.json`.
+Selection criteria (in order): completeness of thought → delivery quality (confidence, energy, no stumbling) → audio quality → visual quality.
 
-**Grouping logic**: segments from the same clip with the same activity type and contiguous time ranges → one unit. Present decomposition to user — show unit IDs, types, durations, segment counts. **Let them adjust before proceeding.**
+**Topic boundary detection:** For long clips covering multiple topics, identify where topic shifts occur using transcript content + silence gaps + scene boundaries. Mark these as potential unit split points.
+
+**Narrative order:** Propose a logical story arc across topic clusters: intro → context/problem → explanation → demo → conclusion. This becomes the default `unit_order`.
+
+**Output:** Write `manifest.narrative` with topic clusters, selected/deselected clips with reasons, proposed story order. Deselected clips feed into `discarded_clips` in the edit_manifest (visible but inactive in studio). **Present to user for approval.**
+
+#### Step 2: Build Global Timeline
+
+Build a **multi-track global timeline** from selected clips. This is the universal format that all exporters (FCPXML, Blender, Remotion) read from. See `references/manifest-schema.md` for the full schema.
+
+**Tracks:**
+- `main` (video): Primary footage clips in narrative order, with in/out points, crop keyframes
+- `overlay` (video): Animations, in-video graphics, PiP overlays positioned by markers
+- `sfx` (audio): Sound effects at transition points and emphasis moments
+- `music` (audio): Background music with ducking volume curves
+
+**Per-clip data:** Each clip on the timeline is a *reference* to a source clip with its own `in_point`, `out_point`, `trim`, `deleted_ranges`, `speed`, `volume_keyframes`, `transform`, and `crop_9_16` keyframes. A source clip can be referenced multiple times (if split).
+
+**Transitions:** Between clips, with type and duration. Cross Dissolve between units, cuts within units by default.
+
+**Interest scoring and crop keyframes** are assigned per clip segment from vision + transcript + pitch + YOLO data (same analysis as before, but written into the global timeline format).
+
+Write to `manifest.timeline` (multi-track format).
+
+#### Step 3: Decompose into Unit Groups
+
+Units are **logical groupings within the global timeline**, not isolated mini-projects. One unit = one concept/topic.
+
+**Decomposition logic:**
+- Each topic cluster from Step 1 becomes a unit
+- A single long clip discussing two topics → two units (split at topic boundary)
+- Audio-matched clips (camera + screencast with synced audio) → one unit
+- Unit contains references to its clips on the global timeline, not copies
+
+**Unit naming**: `unit_{NNN}_{type}_{slug}` — slug from transcript content.
+
+**Unit directory** mirrors main project structure (`raw/`, `audio/`, `frames/`, `analysis/`, etc.) using symlinks. Each unit dir gets its own `footage_manifest.json` + symlinked `style_config.json`.
+
+**Relationship to global timeline:** Units are views into the global timeline. Each unit knows its `timeline_range` (start/end on the global timeline) and its `clip_ids` (which timeline clips belong to it). The global timeline is the source of truth; units provide logical grouping for parallel work.
+
+Present decomposition to user — show unit IDs, types, durations, selected/deselected clips with reasons. **Let them adjust before proceeding.**
 
 Update main manifest: `units[]` array, `pipeline_state.units_decomposed = true`.
 
 ### Phase 12: claudepipe studio (INTERACTIVE)
 
-Launch the studio web app for visual unit review:
+Launch the studio web app for visual unit review and editing:
 ```bash
 cd studio && PROJECT_ROOT=<project_root> npm run dev
 ```
 Tell the user: "Studio running at http://localhost:5173"
 
-The studio provides:
+**This is the most important phase.** The studio gives the user full visual control over editorial decisions.
+
+#### Studio Capabilities
+
+**Viewing:**
 - **Sidebar**: Drag-drop unit reordering, right-click to insert/delete units
 - **Elements tab**: Per-unit footage clips with metadata, analysis summary, file drops
-- **Player tab**: Frame-accurate video with spatial+temporal markers, transcript subtitles
+- **Player tab**: Frame-accurate video per clip with spatial+temporal markers, transcript subtitles
 - **Precision tab**: Zoom view (1x–10x) for precise marker placement
 - **Instructions panel**: Per-unit instructions textarea for Claude, marker reference list
-- **Sync**: 30s auto-sync + manual Ctrl+S, writes `edit_manifest.json` alongside the footage manifest
+
+**NLE Operations (data mutations on edit_manifest — source files untouched):**
+- **Trim**: Set in/out points on a clip via drag handles. Non-destructive — original range preserved, trim range is what the exporter uses
+- **Split**: Cut a clip at a point, creating two clip references from one source. Each piece has its own trim range. Transcript segments divide at the split point (time-based, no re-ASR needed)
+- **Drag between units**: Move a clip (or split piece) from one unit to another
+- **Delete chunk**: Mark a time range within a clip as deleted. Exporter skips these ranges. Deleted chunks are recoverable (remove from `deleted_ranges`)
+
+**Trim enforcement:** The FCPXML exporter hard-clamps all clip references to the trim range. If any timeline reference falls outside the trim, the exporter REJECTS with an error — not silently clips. `deleted_ranges` are similarly enforced. Phase 18 validation catches violations before export. See `references/studio-instruction-protocol.md` for the data model.
+
+**Animation flow checkbox:** Per-unit checkbox "Needs Animation". When checked:
+1. The unit's footage is marked as *reference* (not content to render directly)
+2. User uploads reference images/sketches via added media, or the footage itself serves as visual reference
+3. User writes animation description in instructions textarea
+4. Claude enters animation generation mode (Phase 13) for this unit
+5. Generated animation becomes the unit's active content
+
+**Teleprompter:** Studio generates a QR code in the header. Scanning opens `http://<local-ip>:5173/teleprompter/<unit_id>` on any local device. Shows the narration script (from Claude-generated content or user-written text in instructions) with configurable auto-scroll speed. Used when user needs to record new voiceover/narration for a unit.
+
+**Versioning (git-based):** Each sync auto-commits `edit_manifest.json` to git. Current version = what's used for building. Previous versions browsable via git history. Restore = checkout specific version of edit_manifest. In studio, current version plays as default; previous versions accessible but clearly marked as history. Per-unit: clear indicator of which clips/version are active for the build.
+
+**Sync**: 30s auto-sync + manual Ctrl+S, writes `edit_manifest.json`. Each sync triggers `git add edit_manifest.json && git commit`.
+
+#### Post-Session Processing
 
 Wait for the session to end (`edit_manifest.json` session.active = false). Then:
 1. Read `edit_manifest.json`
-2. Apply `unit_order` changes to main manifest
-3. Process per-unit instructions and markers
-4. For units with `pipeline_requested: true`: spawn background analysis agents
-5. Show summary of all changes, ask for confirmation
-6. Proceed to Phase 13+
+2. Apply clip edits (trims, splits, deletes, moves) to the global timeline
+3. Apply `unit_order` changes
+4. Process per-unit instructions and markers (see `references/studio-instruction-protocol.md`)
+5. For units with `pipeline_requested: true` or `needs_animation: true`: spawn agents per Agent Spawn Protocol
+6. Show summary of all changes, ask for confirmation
+7. Proceed to Phase 13+
 
-**This is the most important phase.** The studio gives the user full visual control over editorial decisions.
+### Agent Spawn Protocol
+
+When spawning parallel agents for per-unit work (Phases 13–15), each agent MUST receive the following context. This is not optional — agents without full context produce isolated, inconsistent work.
+
+**Read-only context (every agent gets all of this):**
+- `SKILL.md` + `USER-SKILL.md` — full pipeline knowledge and operational findings
+- **Global timeline** — all units, all clips, all transcripts, all analysis
+- **All unit instructions** — what the user asked for across ALL units, not just this agent's unit
+- **All agent assignments** — what every other agent is working on, with their unit IDs and instructions
+- **Edit manifest** — markers, trims, splits, discards, added media — for ALL units
+- **Style config** — colors, fonts, dimensions, pipeline settings
+- `references/studio-instruction-protocol.md` — how to interpret markers and instructions
+
+**Mutation scope (strictly enforced):**
+- Agent may ONLY modify its assigned unit's data: clips, timeline segment, markers, SFX, animations within that unit
+- Agent may NOT modify: other units, global timeline order, inter-unit transitions, music tracks, global settings
+
+**Inter-unit work stays with the main agent:**
+- Transitions between units
+- Music ducking across the full timeline
+- Narrative order changes
+- Global timeline reordering
+
+**Structural fluency:** Each agent must understand the manifest schema, edit_manifest schema, marker semantics, trim/split mechanics, and the universal timeline format as working knowledge — not as "here's some context" but as the vocabulary it uses to make correct mutations.
 
 ### Phases 13–15: Per-Unit Refinement (PARALLELIZABLE)
 
-These phases can be run **independently per unit** using the unit directory as project_root. Launch parallel agents for different units:
+These phases run **independently per unit**. Launch parallel agents following the Agent Spawn Protocol above. Each agent works on its assigned unit with full global context but scoped mutations.
 
 #### Phase 13: Animations (if needed)
 When manifest or user indicates animations needed:
@@ -272,16 +356,23 @@ For any music source: create ducking keyframes from VAD data — lower volume du
 
 Pick the best frames (highest interest_score) across all units. Generate 3 thumbnail options using Pillow — bold text overlay with title. Resolution 1280×720. **User picks favorite.**
 
-### Phase 16b: Merge Units
+### Phase 16b: Merge Units into Global Timeline
 
-Read all unit manifests from `units/*/footage_manifest.json`. Collect updated segments, SFX, music, animations from each unit. Rebase file paths from unit-relative to project-relative. Rebuild timeline order and transitions. Back up pre-merge timeline as `_pre_merge_timeline`. Update `pipeline_state.units_merged = true`.
+Read all unit manifests from `units/*/footage_manifest.json`. Collect updated clips, SFX, animations from each unit. Merge into the global multi-track timeline. Rebase file paths from unit-relative to project-relative. Back up pre-merge timeline as `_pre_merge_timeline`. Update `pipeline_state.units_merged = true`.
 
-**Merge output contract** (Phase 17 FCPXML export depends on this exact structure):
-- Each segment MUST have: `id` (e.g., `seg_000_clip_2461`), `in_point`, `out_point` (not just `start`/`end`)
-- `timeline.order` MUST be a list of segment IDs (not `unit_order`)
-- Transitions MUST use `from_segment`/`to_segment` (not `from_unit`/`to_unit`)
-- All clips referenced by segments MUST exist in the main `clips[]` array — including animation clips and inserted media
+**Merge rules:**
+- Unit-level changes (SFX, animations, clip edits) are applied to the global timeline tracks
+- Inter-unit transitions are preserved from the global timeline (main agent controls these)
+- Music tracks are global — merge ducking keyframes from all units' VAD data
+- Animations from each unit go to the `overlay` track with correct timeline positions
+
+**Merge output contract** (Phase 17 exporters depend on this exact structure):
+- Each clip on a track MUST have: `id`, `source_clip_id`, `in_point`, `out_point`, `trim`, `deleted_ranges`
+- `timeline.tracks[].clips` MUST be ordered by `timeline_start`
+- Transitions MUST reference valid `from_clip`/`to_clip` IDs
+- All source clips referenced by timeline clips MUST exist in the main `clips[]` array — including animation clips and inserted media
 - Use `ffprobe` to verify actual durations — do not trust unit manifest values blindly
+- Trim ranges and deleted_ranges from the edit_manifest MUST be applied — the exporter enforces these but the merge should respect them too
 
 ### Phase 17: Build NLE Projects
 
@@ -322,9 +413,27 @@ Generates FCPXML 1.9 files in `exports/`. For 9:16 format, crop keyframes are en
 - `offset` on connected clips is relative to the **parent spine's timeline**, not the parent clip
 - SFX placement data MUST include concrete `after_segment` references (not null)
 
-### Phase 18: Sync Validation
+### Phase 18: Sync Validation + Trim Enforcement
 
-Verify the assembled project: check that all referenced media files exist, audio/video durations match manifest, timeline segments don't overlap, transitions reference valid segment pairs, SFX placements fall within timeline bounds. Report issues.
+Verify the assembled project before export. **This is the enforcement layer — it fails the build rather than producing bad output.**
+
+**Media validation:**
+- All referenced media files exist on disk
+- Audio/video durations match manifest values (ffprobe verification)
+
+**Timeline validation:**
+- No clip overlaps within a track
+- Transitions reference valid clip pairs
+- SFX/overlay placements fall within timeline bounds
+- Unit groups don't overlap on the timeline
+
+**Trim enforcement (critical):**
+- Every clip reference on the timeline MUST fall within its `trim` range
+- No clip reference may include content from `deleted_ranges`
+- If ANY violation is found: **REJECT the build with an explicit error** listing every violation. Do NOT silently clamp or adjust — fail loudly so the user can fix the source data
+- This prevents Claude or any agent from accidentally (or hallucination-driven) including trimmed/deleted content
+
+Report all issues. Build cannot proceed to Phase 17 export until validation passes.
 
 ### Phase 19: YouTube Metadata (CONVERSATIONAL)
 
@@ -373,16 +482,19 @@ For detailed technical information, read from `references/`:
 - `short-form-workflow.md` — Short-form content extraction
 - `youtube-metadata-spec.md` — YouTube upload metadata format
 - `nle-export-formats.md` — Supported NLE export formats + DaVinci Resolve import guide
+- `studio-instruction-protocol.md` — How Claude interprets markers, instructions, trim/split/drag/delete operations
 - `pipeline-runtime-notes.md` — Operational findings: dependency gotchas, Chirp 2 location constraints, manifest format expectations between phases
 
 ## Key Rules
 
-1. **Manifest is truth** — all state lives in `footage_manifest.json`
+1. **Manifest is truth** — all state lives in `footage_manifest.json` (source data + global timeline) and `edit_manifest.json` (user edits)
 2. **Never modify originals** — `raw/` contains symlinks or denoised muxed copies (Phase 3 Step 4), originals stay at source_path
 3. **Easing is NEVER linear** — always BEZIER, SINE, EXPO, BACK, ELASTIC, BOUNCE, or CONSTANT
 4. **Nepali first** — default language is "ne", ASR handles code-switching
 5. **User has final say** — at every approval gate, present options and wait
 6. **Style consistency** — always read `style_config.json` for colors/fonts/dimensions
-7. **Unit isolation** — after decomposition, per-unit work targets `units/<unit_id>/` directories; never cross-modify between units
-8. **Units are mini-projects** — each unit dir has the same layout and manifest schema as the main project
-9. **Scripts are optional** — reference implementations in `scripts/` can be used or bypassed; do what's most effective for the phase
+7. **Global timeline, scoped units** — one timeline for the whole video. Units are logical groupings within it. Parallel agents read the full context but only write to their assigned unit
+8. **Agent spawn protocol** — every parallel agent gets full global context + all agent assignments. Mutations scoped to assigned unit only. No exceptions.
+9. **Trim is sacred** — user-set trim ranges and deleted chunks are enforced by the exporter. No agent, no phase, no script can override trims. Phase 18 validation rejects builds that violate trims.
+10. **Unit = concept** — one unit represents one topic/concept, not one clip. A clip covering two topics becomes two units. Five takes of the same intro is one unit with the best take selected.
+11. **Scripts are optional** — reference implementations in `scripts/` can be used or bypassed; do what's most effective for the phase
