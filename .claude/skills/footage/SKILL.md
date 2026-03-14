@@ -323,9 +323,67 @@ When spawning parallel agents for per-unit work (Phases 13–15), each agent MUS
 
 **Structural fluency:** Each agent must understand the manifest schema, edit_manifest schema, marker semantics, trim/split mechanics, and the universal timeline format as working knowledge — not as "here's some context" but as the vocabulary it uses to make correct mutations.
 
+#### Agent Execution Protocol
+
+Agents MUST NOT take the path of least resistance. When uncertain, FAIL — do not produce garbage and claim success. Every agent follows this execution flow:
+
+**Step 1 — Dry-run plan.** Before doing ANY work, the agent writes a plan stating:
+- What it will do (specific actions, not vague descriptions)
+- Which tools/APIs it will use (e.g., "Lyria 2 on Vertex AI", NOT "generate music")
+- What the expected output looks like (file format, duration, placement)
+- What it will NOT do (explicit anti-patterns from SKILL.md and USER-SKILL.md)
+
+The plan is written to `claude_notes[unitId]` so the main agent and user can review it.
+
+**Step 2 — Execute.** Carry out the plan. If something fails or the chosen approach doesn't work, do NOT silently switch to an easier but wrong approach. Instead, update `claude_notes` with the failure and try the next correct alternative from the plan.
+
+**Step 3 — Quality gates.** Run ALL quality gates for the phase (see below). Every gate must pass. Results are written to `claude_notes[unitId]` with pass/fail status per gate.
+
+**Step 4 — Handoff.** Report results to the main agent:
+- If ALL gates pass: report success with gate results
+- If ANY gate fails: report FAILURE with details of what failed and why. Mark unit `status: "needs_review"`. Do NOT claim success with bad output.
+
+#### Quality Gates by Phase
+
+**Phase 13 — Animations:**
+- [ ] `RENDER_VALID`: Animation renders without errors. ffprobe confirms valid video file.
+- [ ] `DURATION_MATCH`: Duration within 0.5s of expected. If voiceover exists, animation duration matches voiceover.
+- [ ] `RESOLUTION_MATCH`: Resolution matches `style_config.json` (width/height).
+- [ ] `STYLE_MATCH`: Colors used are from `style_config.json` palette (sample 3 frames, extract dominant colors, compare).
+- [ ] `PLACEMENT_VALID`: Animation has valid `timeline_start`, `unit_id`, and correct track assignment in global timeline.
+- [ ] `CONTENT_RELEVANT`: Animation content matches the transcript/instruction context (not generic placeholder graphics).
+
+**Phase 14 — SFX:**
+- [ ] `FILE_VALID`: Each SFX file > 10KB. ffprobe confirms valid audio codec, sample rate, duration.
+- [ ] `DURATION_MATCH`: Duration within 0.5s of requested.
+- [ ] `NOT_SILENCE`: File contains actual audio content (peak amplitude > -40dB). Play first 2 seconds and verify.
+- [ ] `PLACEMENT_CONCRETE`: Every SFX has concrete `after_segment` reference (NOT null). `time_offset_seconds` is set.
+- [ ] `CONTEXT_MATCH`: SFX type matches its context — transition points → whoosh/riser, text appearance → pop/swoosh, emphasis → blip/hit. NOT random sounds at random times.
+- [ ] `TIMELINE_BOUNDS`: All SFX placements fall within the unit's timeline range.
+
+**Phase 15 — Music:**
+- [ ] `NOT_SPEECH`: Generated audio is instrumental music, NOT speech narration. Play first 10 seconds — if you hear words or human voice describing music, the gate FAILS. This means you used the wrong API (Gemini TTS instead of Lyria).
+- [ ] `FILE_VALID`: ffprobe confirms valid audio. File size > 100KB for 30s WAV. Correct sample rate (48kHz).
+- [ ] `NO_DISTORTION`: No clipping artifacts (peak amplitude < 0dBFS).
+- [ ] `STYLE_MATCH`: Music style matches user-approved brief (genre, mood, energy level).
+- [ ] `DUCKING_COMPUTED`: Ducking keyframes computed from VAD data and written to manifest. Keyframes exist for every speech segment.
+- [ ] `API_CORRECT`: Music was generated using Lyria 2 (Vertex AI) or Lyria RealTime (Gemini API), or provided by user. NOT generated using Gemini `response_modalities=["AUDIO"]` — that is TTS and will always fail `NOT_SPEECH`.
+
+#### Failure Protocol
+
+When an agent cannot complete its task correctly:
+
+1. **Do NOT produce garbage.** An empty result is better than a wrong result that downstream phases will treat as correct.
+2. **Do NOT silently switch approaches.** If Lyria fails, don't fall back to Gemini TTS. Instead, report the Lyria failure and suggest alternatives.
+3. **Write failure details to `claude_notes[unitId]`:** what was attempted, what failed, what the error was, what alternatives exist.
+4. **Mark unit status as `"needs_review"`.**
+5. **Report failure to main agent** with enough detail that the user can decide what to do (retry with different params, skip music, provide their own track, etc.).
+
+The main agent presents all agent results (successes AND failures) to the user. The user decides how to handle failures — not the agent.
+
 ### Phases 13–15: Per-Unit Refinement (PARALLELIZABLE)
 
-These phases run **independently per unit**. Launch parallel agents following the Agent Spawn Protocol above. Each agent works on its assigned unit with full global context but scoped mutations.
+These phases run **independently per unit**. Launch parallel agents following the Agent Spawn Protocol above. Each agent works on its assigned unit with full global context but scoped mutations. Every agent MUST pass its phase-specific quality gates before handoff.
 
 #### Phase 13: Animations (if needed)
 When manifest or user indicates animations needed:

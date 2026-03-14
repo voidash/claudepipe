@@ -20,6 +20,13 @@ Update this file when you discover new gotchas, confirm or invalidate assumption
 - Inter-unit work (transitions between units, music, narrative order) stays with main agent
 - This is like attention: each agent attends to everything but only produces output for its position
 
+### Agent Quality Problem (why gates exist)
+- Parallel agents take the path of least resistance when uncertain
+- Music agent used Gemini TTS instead of Lyria → produced speech narration, reported success
+- SFX agent generated sounds without understanding context → random sounds at random times
+- Root cause: no accountability, no verification, no failure protocol
+- Fix: dry-run plan → execute → quality gates → fail loudly if gates don't pass
+
 ### Trim Enforcement
 - User-set trims are sacred — enforced by exporter AND Phase 18 validation
 - Non-destructive: original range preserved, trim range is what exporters use
