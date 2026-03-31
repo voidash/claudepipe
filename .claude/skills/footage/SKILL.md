@@ -1,18 +1,24 @@
 ---
 name: footage
-description: Process raw camera/screen recording footage through analysis, editing decisions, and Remotion-rendered video output. Handles Nepali+English content, multi-format output (16:9, 9:16, shorts), and conversational editorial control.
+description: Process raw camera/screen recording footage through analysis, editing decisions, and Remotion-rendered video output. Handles multilingual content (Nepali, English, or mixed), multi-format output (16:9, 9:16, shorts), and conversational editorial control.
 user_invocable: true
 ---
 
 # /footage — Footage Assortment Pipeline
 
-You are an AI video editor for a Nepali+English code-switching tech/politics YouTube channel. The user shoots with GoPro/phone and captures screen recordings. Your job: analyze footage, make editing decisions (cut boring parts, suggest transitions, flag segments for re-recording), and produce fully rendered video via Remotion.
+You are an AI video editor for a tech/politics YouTube channel. The user shoots with GoPro/phone and captures screen recordings. Your job: analyze footage, make editing decisions (cut boring parts, suggest transitions, flag segments for re-recording), and produce fully rendered video via Remotion.
 
 ## Quick Start
 
 When the user invokes `/footage`, ask:
 
-**"GUI or folder reference?"**
+1. **"What language?"** — Nepali (`ne`), English (`en`), or mixed Nepali+English (`ne+en`). Store as `project.language` in the manifest. This drives ASR language codes, vision analysis prompts, and YouTube metadata language. Default: `ne+en` if unspecified.
+2. **"What style?"** — Pick from saved style profiles or create a new one:
+   - `johnny_harris` — map-driven geopolitical documentary (saved profile)
+   - `reference_short` — talking head intercut with song clips, yellow subtitle boxes (from China Company analysis)
+   - `custom` — user provides 1-3 reference videos, pipeline runs Phase 0 to extract a new style profile
+   - Store as `project.style` in the manifest. Loads `templates/styles/{style}/style_profile.json` which drives script structure, composition patterns, SFX prompts, asset types, and music behavior throughout the pipeline.
+3. **"GUI or folder reference?"**
 
 ### Option A: GUI Import
 Launch the import web app:
@@ -49,6 +55,47 @@ All scripts follow the same interface: `python3 scripts/<name>.py <project_root>
 
 ## Pipeline Phases
 
+### Phase 0: Style Reference Analysis (run once per style, reusable)
+
+**Skip if using a saved style profile** (e.g., `johnny_harris`, `reference_short`). Only run when `project.style = "custom"` or user provides new reference videos.
+
+This phase extracts the editorial DNA from 1-3 reference videos and saves it as a reusable style profile. The profile drives every downstream decision: script structure, composition patterns, SFX design, asset types, music behavior.
+
+**Three-pass analysis using Gemini (the only phase where Gemini video analysis is justified — it's a one-time investment per style):**
+
+**Pass 1 — Blind discovery (no assumptions):**
+Upload the reference video. Prompt Gemini to list every visual and audio TECHNIQUE without describing what the video is about. Categories: motion, appearance/disappearance, audio events, face vs graphics, text, maps, archival footage, screen density, color, repeating patterns, pattern breaks. Target: 80+ distinct observations. The prompt must NOT assume what techniques exist — it discovers them.
+
+**Pass 2 — Pattern extraction (informed by pass 1):**
+Feed pass 1 findings back. For each technique: exact duration in frames at 24fps, easing type (ease-in/out/both/snap), sync relationship to speech, SFX catalog with frequency character and volume, music behavior (silence drops, swells, beat alignment). Extract the creator's 5 signature moves — what makes their work feel distinctly THEIRS.
+
+**Pass 3 — Composition sequences (frame-level DNA):**
+Extract second-by-second layer timelines for 4 key moments: opening hook, topic transition, reveal/climax, talking head stretch. Every layer, every audio event, every motion. Output as JSON arrays directly convertible to Remotion components.
+
+**Output:** Save to `templates/styles/{style_name}/`:
+```
+templates/styles/{style_name}/
+  style_profile.json    # Compiled profile — signature moves, SFX catalog,
+                        # typography, color palette, map behavior, music behavior,
+                        # pacing rules, composition rules, asset types needed
+  pass1_discovery.md    # Raw pass 1 analysis
+  pass2_patterns.md     # Raw pass 2 analysis
+  pass3_sequences.md    # Raw pass 3 analysis (JSON composition sequences)
+```
+
+**How the style profile is used downstream:**
+- **Phase 11 (Narrative):** Script structure follows the style's pacing pattern (e.g., JH oscillates slow TH → fast montage)
+- **Phase 11b (Research):** Knows what asset types to look for based on `asset_types_needed`
+- **Phase 11c (Assets):** Fetches the right kinds of assets (maps vs photos vs archival footage)
+- **Phase 13 (VFX):** Agents read signature moves and replicate composition patterns
+- **Phase 14 (SFX):** Uses `sfx_catalog` prompts for generation, places SFX at the right editorial beats
+- **Phase 15 (Music):** Follows `music_behavior` rules for ducking, silence, swells
+- **Phase 16b (Merge):** Transitions follow the style's transition patterns
+
+**Saved profiles (currently available):**
+- `johnny_harris` — geopolitical documentary: map-driven storytelling, archival flashbacks, conversational push-in, music silence before key statements
+- More profiles are added by running Phase 0 on new reference videos
+
 ### Phase 1: Setup
 
 Check dependencies and initialize the project.
@@ -60,6 +107,8 @@ Check dependencies and initialize the project.
 
 **Project directory structure** — create under project root:
 `raw/`, `audio/denoised/`, `frames/`, `analysis/{transcripts,vad,pitch,scenes,yolo,vision}/`, `sfx/`, `music/`, `animations/`, `thumbnails/`, `renders/`, `exports/`, `units/`, `tmp/`
+
+**Remotion project initialization** — copy the template from `remotion/` (repo root) into `<project_root>/remotion/` and run `npm install`. This gives each project its own Remotion project with shared components (subtitle renderer, audio layers, transition library) that agents extend with unit-specific `.tsx` compositions. See "Remotion Project Structure" section below.
 
 Initialize `footage_manifest.json` per `references/manifest-schema.md`. Copy `templates/style_config_default.json` → `style_config.json`. Set `project.source_files` and `project.hint` from user input.
 
@@ -101,7 +150,14 @@ Update `clip.audio` in manifest. Set `clip.audio.muxed = true` to indicate the `
 
 ### Phase 4: ASR Transcription
 
-Transcribe using **Chirp 2** (primary — provides precise word-level timestamps). Use `ne-NP` language code on `us-central1` location. Chirp 2 is only available in `us-central1`, `europe-west4`, `asia-southeast1` — multi-language codes (e.g., `["ne-NP", "en-US"]`) are NOT supported in these locations. Use single `ne-NP` code instead; Chirp 2 handles English code-switching adequately.
+Transcribe using **Chirp 2** (primary — provides precise word-level timestamps). Language code depends on `project.language`:
+
+| `project.language` | Chirp 2 code | Notes |
+|---|---|---|
+| `ne` or `ne+en` | `ne-NP` | Chirp 2 handles English code-switching within Nepali adequately |
+| `en` | `en-US` | Standard English recognition. Available on all Chirp 2 regions |
+
+Chirp 2 is only available in `us-central1`, `europe-west4`, `asia-southeast1`. Multi-language codes (e.g., `["ne-NP", "en-US"]`) are NOT supported in these locations — use a single code.
 
 **Sync Recognize limit:** 60 seconds max. Clips > 55s must be split into chunks (52s with 3s overlap), transcribed separately, and merged by deduplicating overlap words.
 
@@ -147,7 +203,7 @@ Upload the raw video file (not frames) to Gemini via the File API. Gemini proces
 - Also validates/supplements Phase 6 scene detection with temporal audio+visual cues
 - See `references/gemini-video-understanding.md` for API details, prompting, and cost
 
-**Limitation:** Gemini timestamps are 1-second granularity (not frame-accurate). Bounding box detection is experimental and single-frame (no tracking) — YOLO is still needed for 9:16 crop keyframes. Nepali audio transcription is unconfirmed — Chirp 2 remains the ASR engine.
+**Limitation:** Gemini timestamps are 1-second granularity (not frame-accurate). Bounding box detection is experimental and single-frame (no tracking) — YOLO is still needed for 9:16 crop keyframes. For `ne`/`ne+en` projects, Nepali audio transcription via Gemini is unconfirmed — Chirp 2 remains the ASR engine. For `en` projects, Gemini's English audio understanding is reliable and can supplement ASR.
 
 #### Backend B: Claude Vision
 
@@ -245,24 +301,285 @@ Units are **logical groupings within the global timeline**, not isolated mini-pr
 
 Present decomposition to user — show unit IDs, types, durations, selected/deselected clips with reasons. **Let them adjust before proceeding.**
 
+#### Step 4: Initialize Remotion Compositions
+
+Each unit gets its own Remotion composition immediately after decomposition. This is the working document for the unit — all subsequent work (VFX, subtitles, SFX, music) adds layers to this composition rather than producing pre-rendered assets.
+
+**Per-unit composition creation:**
+1. Create `remotion/src/units/{unit_id}/Composition.tsx` — the unit's root composition
+2. The composition imports the unit's source clips from the timeline (video tracks with trim/split/delete applied)
+3. Register the composition in `remotion/src/index.ts` with the unit's ID, duration, fps, and dimensions from `style_config.json`
+
+**Initial composition contains only:** source footage clips in sequence with trims applied. No effects, no subtitles, no overlays yet — those are added by agents in Phases 13–15.
+
+**Creating a new unit at any point** (via studio insert or CLI) MUST also create its Remotion composition. The composition is the unit's primary artifact.
+
 Update main manifest: `units[]` array, `pipeline_state.units_decomposed = true`.
+
+### Phase 11b: YouTube Research (if topic-driven content)
+
+**READ FIRST:** `references/social-media-download.md` (platform download matrix, Googlebot trick, cross-posting patterns), `references/source-citation-style.md` (how to capture sources for visual citation in the video).
+
+When the video discusses a topic (not just raw footage assembly), search YouTube for existing coverage to extract facts, context, and potential B-roll clips. Also search TikTok (via Playwright) and Facebook (via Googlebot UA) for viral clips. This phase runs before asset acquisition because the research informs what assets are needed.
+
+**Step 1 — Search and filter:**
+```bash
+yt-dlp --dump-json "ytsearch15:{topic}" --flat-playlist
+```
+Pull metadata (title, description, duration, channel) for top 15 results. Filter by relevance using title/description keyword match. Select top 8-10 for transcript extraction.
+
+**Step 2 — Transcript extraction:**
+```bash
+yt-dlp --write-auto-subs --sub-lang ne,en --skip-download -o "analysis/research/%(id)s" <url>
+```
+Extract auto-generated subtitles. For Nepali content, YouTube auto-subs are approximate but sufficient for research (not for subtitle rendering — that's Chirp 2's job).
+
+**Step 3 — Research synthesis (Claude reads transcripts directly):**
+Claude reads ALL transcripts — this costs nothing and Claude is the primary research engine:
+- Extract key facts, names, dates, relationships
+- Identify which videos have the best/most accurate coverage
+- Flag contradictions between sources
+- Identify potential B-roll clips with timestamps from transcript context: "Video X discusses Y around the 2:15 mark based on transcript"
+- Note any information that changes the script or adds context the user might not know
+
+**Do NOT upload videos to Gemini for research.** Transcripts are the source of truth — they're free and contain 90% of the information. Only upload a video to Gemini if the user explicitly asks to analyze the visual content of a specific video (e.g., "look at what's happening in this clip at 3:00").
+
+**Step 4 — Research brief:**
+Present to user:
+- "Here's what I learned from N videos about this topic" (condensed facts)
+- "These 3 videos have the most relevant footage" (with links + timestamps)
+- "Suggested B-roll clips: [list with descriptions]"
+- "Things you might not know: [surprising facts from research]"
+
+User approves/modifies. Research feeds into script refinement and the asset manifest in Phase 11c.
+
+**Step 5 — Source capture for citation visuals:**
+For every citable fact in the research brief, capture the source for visual citation in the video (see `references/source-citation-style.md`):
+- Use Playwright/Puppeteer to screenshot the source webpage at 1280x900
+- Include URL bar + site navigation + article headline + the relevant passage in context
+- Save to `assets/sources/{source_id}.png`
+- Record in the research brief: `{ source_id, url, domain, date, key_passage, highlight_region }`
+- Generate QR code per source URL (Python `qrcode` library) → `assets/sources/{source_id}_qr.png`
+
+The composition agent (Phase 13) reads these source citations and renders them as: paper-textured page → browser screenshot → grungy highlighter over the key passage → QR in corner. See the reference doc for the full layer stack and animation spec.
+
+Write to `analysis/research/brief.json`, `analysis/research/transcripts/`, and `assets/sources/`.
+
+### Phase 11c: Asset Manifest Generation + Acquisition (PARALLELIZABLE)
+
+**READ FIRST:** `references/social-media-download.md` (download methods per platform, Googlebot UA for Facebook, TikTok impersonation, cross-posting patterns), `references/source-citation-style.md` (visual design of source citations — grungy highlighter, QR codes, paper texture), `references/source-screenshot-pipeline.md` (technical: Playwright 2x capture, `get_by_text()` bounding box extraction, coordinate scaling, highlight overlay implementation).
+
+Once the narrative is analyzed, units are decomposed, and research is done, the pipeline knows exactly what visual assets the video needs. This phase generates the asset manifest and fetches everything BEFORE agents start work. **No agent in Phases 13-15 should ever need to search the web for an image.**
+
+#### Step 1: Generate Asset Manifest
+
+The LLM reads the narrative analysis, unit instructions, research brief, and style config, then produces `assets/manifest.json`:
+
+```json
+{
+  "total": 85,
+  "assets": [
+    {
+      "id": "person_bhumika_shrestha",
+      "type": "person_photo",
+      "query": "Bhumika Shrestha",
+      "context": "Nepali transgender activist, IWOC 2022 winner, RSP proportional candidate",
+      "treatment": "cutout_sticker",
+      "min_resolution": [800, 800],
+      "needed_by": ["unit_01"],
+      "status": "pending"
+    },
+    {
+      "id": "flag_nepal",
+      "type": "country_flag",
+      "country_code": "np",
+      "treatment": "transparent_png",
+      "strategy": "generate",
+      "needed_by": ["unit_01"],
+      "status": "pending"
+    },
+    {
+      "id": "clip_song_twist_reveal",
+      "type": "video_segment",
+      "source_url": "https://youtube.com/watch?v=...",
+      "description": "Moment where narrator reveals Nisha is lesbian, ~1:19-1:27",
+      "duration_max": 10,
+      "needed_by": ["unit_03"],
+      "status": "pending"
+    },
+    {
+      "id": "texture_film_grain",
+      "type": "overlay_texture",
+      "style": "film_grain_loop_5s",
+      "strategy": "generate",
+      "needed_by": ["global"],
+      "status": "pending"
+    }
+  ]
+}
+```
+
+**Asset types and fetch strategies:**
+
+| Type | Strategy | Source chain |
+|------|----------|-------------|
+| `country_flag` | **Generate** with PIL (deterministic — don't web search) | PIL color stripes. Nepal flag: use known SVG. |
+| `emblem` / `logo` | Fetch from Wikimedia Commons API → fallback web search | Wikimedia `action=query&titles=File:Emblem_of_X` |
+| `person_photo` | Web search → download top 5 → Gemini verify identity → rembg | Google Images → news sites → official sources |
+| `video_segment` | `yt-dlp --download-sections` + Gemini timestamp | Research phase already identified timestamps |
+| `map` | `OSMMap` Remotion component (MapLibre GL + CartoDB Dark Matter tiles) | Use `OSMMap` with camera keyframes for all geographically accurate maps. `NepalGeoMap` (GeoJSON/SVG) only for animated boundary sequences (elections, dissolutions). Never use static SVG or PIL for maps requiring pin accuracy. |
+| `overlay_texture` | **Generate** with ffmpeg/PIL (grain, paper, scratches) | Never fetch — always generate |
+| `stock_image` | Unsplash API → Pexels API → web search | Licensed sources first |
+| `icon` / `symbol` | Web search with "PNG transparent" → Wikimedia | Simple icons can also be generated |
+| `source_screenshot` | Playwright screenshot of source URL | Captured in Phase 11b research. Include URL bar, navbar, headline, passage. |
+| `source_qr` | **Generate** with Python `qrcode` library | QR code linking to source URL. Always generated, never fetched. |
+
+**Generate-don't-fetch rule:** Country flags, solid colors, gradients, film grain, paper textures, simple geometric shapes — these are ALWAYS generated programmatically. Faster, more reliable, exact dimensions. An agent that web-searches for a rainbow flag is wasting time.
+
+**Present the manifest to the user** before fetching. User can add/remove/modify assets. "I also need a photo of Sunil Babu Pant" → add to manifest.
+
+#### Step 2: Parallel Asset Acquisition
+
+Split assets by type across parallel agents:
+
+| Agent | Responsible for | Tools |
+|-------|----------------|-------|
+| Agent A | Person photos (all) | Web search → download top 5 per person → Gemini verify identity → best match → rembg → treatment |
+| Agent B | Flags, emblems, logos, icons | Known URLs / Wikimedia API / PIL generation |
+| Agent C | Maps | `OSMMap` component (MapLibre GL) for geographic maps, `NepalGeoMap` (GeoJSON/SVG) for boundary animations only |
+| Agent D | Video clips (all) | `yt-dlp --download-sections` at timestamps from research phase |
+| Agent E | Textures, overlays | PIL / ffmpeg generation (grain loops, paper textures, light leaks, scratches) |
+
+Each agent gets a **numbered checklist** from the manifest. Every asset must end in one of three states:
+- **ready** — file exists, verified, post-processed
+- **failed** — all sources tried, reason logged
+- **needs_review** — downloaded but quality/relevance uncertain, presenting options to user
+
+There is NO fourth state. `ready + failed + needs_review = total`. If the math doesn't add up, the phase hasn't passed.
+
+#### Step 3: Verification Pipeline (Claude-first, Gemini only when needed)
+
+Every downloaded asset goes through a tiered verification chain. **Claude is the primary verifier** — it can read images, check files, and make relevance judgments. Gemini is used ONLY for tasks Claude cannot do (e.g., analyzing video content, which requires uploading to Gemini's File API).
+
+**Tier 1 — Automated checks (no LLM, instant):**
+1. `file` command confirms actual format matches expected (catches HTML-disguised-as-PNG)
+2. File size check — images > 10KB, video clips > 100KB (catches empty/corrupt downloads)
+3. Resolution check via PIL/ffprobe — dimensions meet `min_resolution` from spec
+
+**Tier 2 — Claude verification (the agent itself):**
+4. Agent reads each downloaded image directly using the Read tool. Claude is multimodal — it can SEE the image and verify:
+   - "Is this actually a photo of Bhumika Shrestha?" → Claude checks against context from research phase
+   - "Is this a Nepal flag or some other flag?" → Claude can tell
+   - "Is the background cleanly removed?" → Claude can see rembg artifacts
+   - "Is this resolution acceptable for the composition?" → Claude can judge
+5. Agent makes the pass/fail/needs_review decision based on what it SEES, not what it hopes
+
+**Tier 3 — Gemini (only if user explicitly requests OR Claude is uncertain):**
+6. If Claude cannot confidently verify an asset (e.g., "I found 3 photos and I'm not sure which one is the right person"), escalate to user for review — do NOT auto-escalate to Gemini
+7. Gemini video analysis is used ONLY when the user says "look at this video" — not for routine verification
+8. Gemini is NEVER used for tasks Claude can do: reading images, checking file formats, comparing photos to descriptions
+
+**Tier 4 — Post-processing (automated):**
+9. rembg for cutouts, B&W + grain for vintage treatment, resize/crop, format conversion
+10. Claude verifies the post-processed result (reads the output image to check for artifacts like the leaf problem we hit with rembg)
+
+**Cost principle:** Transcripts are free. Claude reading images is free (it's the current conversation). `file`/`ffprobe` are free. Only use Gemini when there's no alternative, and only when the user explicitly asks for video analysis.
+
+#### Step 4: Asset Dashboard
+
+Present to user:
+
+```
+Asset Acquisition Complete:
+  78/85 ready
+  4/85 failed (reasons below)
+  3/85 needs_review (your input needed)
+
+Failed:
+  - person_numa_limbu: No clear photo found. Searched Google Images,
+    Wikimedia, news sites. 2 candidates found but Gemini confidence < 0.4.
+    Suggestion: user provides photo or skip this asset.
+  - clip_pride_parade_2023: No YouTube video found matching "Kathmandu
+    pride parade 2023 march." Found 2024 footage — use instead?
+  ...
+
+Needs Review:
+  - person_sunil_pant: 3 candidates [thumbnails]. Which is correct?
+  - map_nepal_districts: Resolution 600x400, below 800x800 minimum.
+    Use anyway or search for higher res?
+  ...
+```
+
+User resolves the review items. Failed assets are either provided by the user, substituted, or dropped from the manifest.
+
+#### Step 5: Register in Project
+
+All ready assets are:
+1. Copied to `<project_root>/assets/{type}/` with standardized filenames matching manifest IDs
+2. Symlinked (or copied) to `<project_root>/remotion/public/assets/` for Remotion access
+3. Manifest updated with final file paths, dimensions, and treatment applied
+4. `pipeline_state.assets_acquired = true`
+
+**Project directory structure for assets:**
+```
+assets/
+  manifest.json         # The asset registry — source of truth
+  people/               # Person cutouts and stickers
+  flags/                # Country/org flags
+  maps/                 # Geographical maps
+  textures/             # Grain loops, paper, scratches, light leaks
+  clips/                # Extracted video segments
+  icons/                # Logos, emblems, symbols
+  research/             # YouTube transcripts, research brief
+```
+
+Agents in Phases 13-15 reference assets by manifest ID: `assets.people.person_bhumika_shrestha.path`. They never search the web themselves.
+
+#### Quality Gates — Phase 11c (Asset Acquisition)
+
+- [ ] `MANIFEST_COMPLETE`: Every asset in the manifest has status `ready`, `failed`, or `needs_review`. No `pending` items remain.
+- [ ] `COUNT_MATCHES`: `ready + failed + needs_review = total`. The math adds up.
+- [ ] `FILES_EXIST`: Every `ready` asset has a file on disk at the registered path. `ls` confirms.
+- [ ] `FILES_VALID`: Every `ready` image file passes `file` command check (is actually an image, not HTML). Every video passes `ffprobe`.
+- [ ] `RESOLUTION_MET`: Every `ready` asset meets its `min_resolution` spec.
+- [ ] `CLAUDE_VERIFIED`: Claude (the agent itself) read each person photo and context-sensitive asset, confirmed relevance. No Gemini used unless user explicitly requested video analysis.
+- [ ] `FAILURES_LOGGED`: Every `failed` asset has a specific reason (not "couldn't find it" — must list sources tried and results).
+- [ ] `REVIEWS_RESOLVED`: User has resolved all `needs_review` items before proceeding.
+
+#### Anti-slack Rules (Asset-Specific)
+
+**The count is sacred.** 100 assets in the manifest = 100 status entries in the report. An agent cannot mark the phase complete with 60/100 entries and claim the rest "weren't needed."
+
+**Every failure needs a detailed reason.** "Couldn't find it" is NOT acceptable. Acceptable: "Searched Google Images (3 results, none matching), Wikimedia (0 results), Unsplash (0 results for 'Numa Limbu'). Tried alternate query 'Numa Limbu Chanchala transgender Nepal' — 1 result, Gemini confidence 0.3, below 0.6 threshold. Asset marked failed."
+
+**Generate-don't-fetch is not optional.** If the asset type says `strategy: "generate"`, the agent generates it. If the agent web-searches instead, the quality gate catches the wasted time (the asset should already be ready from generation, not from a web search).
+
+**File verification is automated, not self-reported.** The agent doesn't say "file looks good." The pipeline runs `file`, `ffprobe`, resolution check, and Gemini Vision. The agent's opinion of the file quality is irrelevant.
+
+**Batched Gemini verification is the final gate.** After all agents report done, the main agent uploads ALL "ready" assets in batches of 10 and asks Gemini to verify. This catches cases where a fetching agent downloaded confidently-wrong images. An agent that downloaded a photo of "Bhumika Subba" instead of "Bhumika Shrestha" gets caught here.
 
 ### Phase 12: claudepipe studio (INTERACTIVE)
 
-Launch the studio web app for visual unit review and editing:
+Launch the studio web app and Remotion Studio sidecar:
 ```bash
+# Terminal 1: Studio web app
 cd studio && PROJECT_ROOT=<project_root> npm run dev
-```
-Tell the user: "Studio running at http://localhost:5173"
 
-**This is the most important phase.** The studio gives the user full visual control over editorial decisions.
+# Terminal 2: Remotion Studio sidecar (for composition preview)
+cd <project_root>/remotion && npx remotion studio --port 3002
+```
+Tell the user: "Studio running at http://localhost:5173 | Remotion Studio at http://localhost:3002"
+
+**This is the most important phase.** The studio gives the user full visual control over editorial decisions. After agents process units (Phases 13–15), the studio shows Remotion composition previews — the actual composed output with all layers, not just raw footage.
 
 #### Studio Capabilities
 
 **Viewing:**
-- **Sidebar**: Drag-drop unit reordering, right-click to insert/delete units
+- **Sidebar**: Drag-drop unit reordering, right-click to insert/delete units. Creating a new unit also creates its Remotion composition.
 - **Elements tab**: Per-unit footage clips with metadata, analysis summary, file drops
-- **Player tab**: Frame-accurate video per clip with spatial+temporal markers, transcript subtitles
+- **Player tab**: Two modes:
+  - **Raw footage**: Frame-accurate video per clip with spatial+temporal markers, transcript subtitles. Used during initial editorial decisions (trims, splits, instructions).
+  - **Composition preview**: Inline iframe to Remotion Studio (`:3002`) showing the unit's composed output with all layers (subtitles, VFX, SFX, music). Used after agents have processed the unit. "Open in Remotion Studio" button opens the full Remotion UI for detailed tweaking.
 - **Precision tab**: Zoom view (1x–10x) for precise marker placement
 - **Instructions panel**: Per-unit instructions textarea for Claude, marker reference list
 
@@ -310,11 +627,24 @@ The main agent (the one spawning subagents) is subject to the SAME quality stand
 
 **3. ALWAYS include the Agent Execution Protocol in the spawn prompt.** Reference the dry-run plan → execute → quality gates → failure protocol flow. Tell the agent which quality gates apply. If you don't, the agent will skip them.
 
-**4. NEVER tell an agent "keep it simple," "use placeholders," or "approximate is fine" for user-facing deliverables.** These phrases are the main agent giving itself permission to produce garbage. If something genuinely can't be done (missing dependency, no API access), the agent should discover that and report failure — not be pre-told to produce a lesser version.
+**4. NEVER reduce scope when writing the agent prompt.** Common violations:
+- Telling the agent "keep it simple," "use placeholders," or "approximate is fine"
+- Describing 3 of the user's 5 requirements and omitting the other 2
+- Rephrasing "rotoscope the person and put logos behind them" as "add some visual effects"
+- Pre-deciding that a step is "too hard" and telling the agent to skip it
+
+The subagent prompt MUST contain every requirement the user stated. If the main agent thinks something can't be done, it does NOT get to pre-filter — the subagent discovers that and reports failure. The main agent's job is to relay, not to editorialize.
 
 **5. ALWAYS reference the edit manifest operations API.** If the studio server is running (`curl -s http://localhost:3001/api/status`), tell the agent to use `PATCH http://localhost:3001/api/edit-manifest` with typed operations. If the server is not running, fall back to writing results to `units/{unit_id}/agent_output.json`. Agents NEVER write to `edit_manifest.json` directly.
 
-**6. Include ALL relevant reference docs.** If the task involves animations, include `references/animation-style-config.md`. If it involves effects, include what tools are available (`rembg`, SAM2, ffmpeg filters, etc.). The agent can't use tools it doesn't know exist.
+**6. Include ALL relevant reference docs — and the READ FIRST list from the phase spec.** Each phase has a `READ FIRST:` section listing the exact docs agents must read. Copy those into the spawn prompt. Key references by phase:
+- **Phase 11b (Research):** `social-media-download.md`, `source-citation-style.md`
+- **Phase 11c (Assets):** `social-media-download.md`, `source-citation-style.md`
+- **Phase 13 (VFX):** `transition-fundamentals.md` (MANDATORY), `source-citation-style.md`, `remotion-compositing.md`, style profile JSON
+- **Phase 14 (SFX):** `sfx-music-generation.md`, style profile SFX catalog
+- **Phase 15 (Music):** `sfx-music-generation.md`, style profile music behavior
+- **Phase 16b (Merge):** `transition-fundamentals.md` (MANDATORY), style profile pacing rules
+- If the task involves animations, include `animation-style-config.md`. If effects, include what tools are available (`rembg`, SAM2, ffmpeg filters, etc.). The agent can't use tools it doesn't know exist.
 
 **Anti-pattern example (what NOT to do):**
 ```
@@ -438,6 +768,24 @@ When the studio server is not running (e.g., pure CLI pipeline execution without
 
 Agents MUST NOT take the path of least resistance. When uncertain, FAIL — do not produce garbage and claim success. Every agent follows this execution flow:
 
+##### Anti-patterns: How agents avoid hard work (and why we catch it)
+
+These are the specific failure modes we've observed. The protocol below is designed to prevent them. If you catch yourself doing any of these, stop and course-correct.
+
+**Scope reduction.** The user asks for 5 things. The agent does 2 of them and presents the result as complete. This is NOT the same as "failing cleanly" — failure means reporting "I couldn't do X because Y." Scope reduction means pretending X was never asked for.
+- **Detection:** Step 1 requires listing every user requirement as a pass condition. Step 3 checks every one. If a requirement is missing from the plan, the plan is wrong.
+
+**Complexity collapse.** A task requires 6 sequential steps (extract frame → segment person → generate border → animate sticker → add text → randomize entrance). The agent sees the chain, decides it's "too complex," and produces a single-step approximation (e.g., static overlay instead of animated sticker). The output looks vaguely related but misses the actual request.
+- **Detection:** Step 1 requires decomposing into discrete checkpointed sub-steps. Each sub-step has its own pass condition. If the plan has fewer steps than the task requires, the agent is collapsing complexity.
+
+**Silent substitution.** The user says "rotoscope" and the agent produces a CSS glow. The user says "pop color borders" and the agent uses a thin gray outline. The output exists and doesn't crash, but it's not what was asked for. The agent never reports a failure because it never tried the real approach.
+- **Detection:** Step 0 (Research) requires understanding what the user's terms actually mean before planning. If the agent can't do what the term requires, it must report failure, not substitute.
+
+**First-obstacle bailout.** The agent hits an error on step 2 of 6 (e.g., rembg fails on one frame). Instead of debugging, trying alternatives (SAM2, ffmpeg chromakey, manual masking), or isolating the failure, it abandons the entire task and reports "couldn't do it."
+- **Detection:** Step 1 requires a fallback plan for each sub-step. Step 2 requires trying alternatives before declaring failure. A single error on one sub-step does not justify abandoning the whole task.
+
+---
+
 **Step 0 — Research.** Before planning, the agent MUST build situational awareness. This is not optional — an agent that skips research will produce context-free garbage.
 
 - **Read SKILL.md** — understand the full pipeline, the manifest schemas, the phase you're operating in, the quality gates, the failure protocol. This is your operating manual.
@@ -447,21 +795,53 @@ Agents MUST NOT take the path of least resistance. When uncertain, FAIL — do n
 - **Check available tools** — what's installed? (`rembg`, `SAM2`, `ffmpeg` filters, Remotion, Manim, etc.) What APIs are configured? Don't assume a tool is unavailable without checking.
 - **Read existing code patterns** — if there's existing animation code, match its patterns. If there's existing manifest mutations, follow the same schema.
 
-**Step 1 — Plan with pass conditions.** Based on research, write a plan stating:
-- What it will do (specific actions, not vague descriptions)
-- Which tools/APIs it will use (e.g., "rembg for person segmentation", NOT "some kind of effect")
-- What the expected output looks like (file format, duration, placement, how it integrates with existing content)
-- **Pass conditions** — define what "done" looks like BEFORE starting. These are the agent's own acceptance criteria, derived from the user's instructions + the phase quality gates. Example: "PASS if: person is segmented from background with clean edges, logos render behind the person layer, output is alpha-channel WebM at 1920x1080, manifest updated with overlay_at_marker reference."
-- What it will NOT do (explicit anti-patterns from SKILL.md)
-- Fallback plan if the primary approach fails
+**Step 1 — Decompose into sub-steps with pass conditions.** Based on research, write a plan that:
+
+**1a. Lists EVERY user requirement.** Re-read the user's instructions word by word. Each distinct ask becomes a requirement. "Extract gorilla, remove background, create sticker with pop borders, random entrance with text" = 5 requirements, not 1. If your plan doesn't address all of them, it's incomplete.
+
+**1b. Decomposes into sequential sub-steps.** Each sub-step is a concrete action with:
+- What it does (specific action, not vague description)
+- Which tool/API it uses (e.g., "rembg for person segmentation", NOT "some kind of effect")
+- What the expected output looks like (file type, dimensions, format)
+- **A pass condition** for this sub-step specifically
+- **A fallback** if this sub-step fails (alternative tool, different approach)
+
+Example decomposition for "extract gorilla from video, remove background, create sticker with pop borders, random entrance":
+```
+Sub-step 1: Extract gorilla frame → ffmpeg frame extraction at timestamp → PASS: gorilla_frame.png exists, correct resolution
+Sub-step 2: Segment gorilla → rembg (fallback: SAM2) → PASS: gorilla_mask.png has alpha channel, subject isolated
+Sub-step 3: Generate pop border → PIL/canvas stroke with style_config colors, medium width → PASS: bordered_sticker.png has visible colored border
+Sub-step 4: Animate entrance → Remotion component with random position + spring animation → PASS: renders without error, sticker appears at random position
+Sub-step 5: Add text overlay → Remotion <Text> component → PASS: text visible, readable, positioned near sticker
+```
+
+**1c. Defines global pass conditions** — the phase quality gates PLUS user-specific requirements. These are checked in Step 3.
+
+**1d. States what it will NOT do** (explicit anti-patterns from SKILL.md).
+
+The plan is written to `claude_notes[unitId]` so the main agent and user can review it. **If the plan has fewer sub-steps than the task complexity warrants, the agent is collapsing complexity** — go back and decompose further.
 
 The plan is written to `claude_notes[unitId]` so the main agent and user can review it.
 
-**Step 2 — Execute.** Carry out the plan. If something fails or the chosen approach doesn't work, do NOT silently switch to an easier but wrong approach. Instead, update `claude_notes` with the failure and try the next correct alternative from the fallback plan.
+**Step 2 — Execute sub-steps sequentially with checkpoints.** Execute each sub-step from the plan in order. After each sub-step:
+- Verify its pass condition before moving to the next
+- If it passes: log success to `claude_notes`, continue to next sub-step
+- If it fails: try the fallback for THIS sub-step (not the whole task). If the fallback also fails, log the failure and continue to the next sub-step if possible (some sub-steps may be independent). Only abandon the entire task if a critical-path sub-step fails with no alternatives.
 
-**Step 3 — Verify pass conditions.** Check EVERY pass condition defined in Step 1, plus ALL quality gates for the phase (see below). Every condition must pass. For each condition, write the actual check performed and the result — not just "PASS." Example: "PASS — ffprobe confirms 1920x1080 VP8+alpha WebM, 4.0s duration" or "FAIL — rembg not installed, person segmentation could not be performed."
+**Critical rule: a failed sub-step does NOT justify reducing scope.** If sub-step 2 (segmentation) fails, you cannot skip sub-steps 3-5 (border, animation, text) and present the raw frame as the result. You report: "Sub-step 2 failed (rembg error: X, SAM2 not installed). Sub-steps 3-5 depend on this and could not proceed. Completed: sub-step 1 only. Remaining work requires: [specific tool/fix]."
 
-Results are written to `claude_notes[unitId]` with pass/fail status per condition.
+**Never silently switch to an easier approach.** If you find yourself writing code that's simpler than the plan calls for, stop and ask: "Am I implementing what was planned, or am I taking a shortcut?" If it's a shortcut, either go back to the plan or explicitly log the deviation and why.
+
+**Step 3 — Verify ALL pass conditions (scope check).** This is where scope reduction gets caught. Check:
+1. **Every sub-step pass condition** from the plan. List them ALL — if any are missing from your verification, you reduced scope.
+2. **Every global pass condition** from Step 1c.
+3. **Every phase quality gate** (see below).
+
+For each condition, write the actual check performed and the result — not just "PASS." Example: "PASS — ffprobe confirms 1920x1080 VP8+alpha WebM, 4.0s duration" or "FAIL — rembg not installed, person segmentation could not be performed."
+
+**Scope verification:** Count the user requirements from Step 1a. Count the pass conditions you're checking. If you're checking fewer conditions than requirements, you dropped something. Go back and find what you skipped.
+
+Results are written to `claude_notes[unitId]` with pass/fail status per condition, including a summary: "X/Y requirements addressed, Z sub-steps completed, W sub-steps failed."
 
 **Step 4 — Handoff.** Report results to the main agent:
 - If ALL conditions pass: report success with verification results
@@ -469,28 +849,31 @@ Results are written to `claude_notes[unitId]` with pass/fail status per conditio
 
 #### Quality Gates by Phase
 
-**Phase 13 — Animations:**
-- [ ] `RENDER_VALID`: Animation renders without errors. ffprobe confirms valid video file.
-- [ ] `DURATION_MATCH`: Duration within 0.5s of expected. If voiceover exists, animation duration matches voiceover.
-- [ ] `RESOLUTION_MATCH`: Resolution matches `style_config.json` (width/height).
-- [ ] `STYLE_MATCH`: Colors used are from `style_config.json` palette (sample 3 frames, extract dominant colors, compare).
-- [ ] `PLACEMENT_VALID`: Animation has valid `timeline_start`, `unit_id`, and correct track assignment in global timeline.
-- [ ] `CONTENT_RELEVANT`: Animation content matches the transcript/instruction context (not generic placeholder graphics).
+**Phase 13 — Animations & VFX:**
+- [ ] `COMPOSITION_COMPILES`: Unit composition compiles after adding layers (`npx remotion compositions` lists it without errors).
+- [ ] `RENDERS_FRAME`: `npx remotion still --gl=angle` renders at least 1 frame from the unit composition without crashing.
+- [ ] `DURATION_MATCH`: Unit composition duration within 0.5s of expected. If voiceover exists, animation layer timing matches voiceover.
+- [ ] `RESOLUTION_MATCH`: Composition dimensions match `style_config.json` (width/height).
+- [ ] `STYLE_MATCH`: Colors used are from `style_config.json` palette (render 3 sample frames, extract dominant colors, compare).
+- [ ] `LAYER_REGISTERED`: New `.tsx` layer files exist in `remotion/src/units/{unit_id}/layers/` and are imported in the unit's `Composition.tsx`.
+- [ ] `CONTENT_RELEVANT`: Animation/VFX content matches the transcript/instruction context (not generic placeholder graphics).
 
 **Phase 14 — SFX:**
-- [ ] `FILE_VALID`: Each SFX file > 10KB. ffprobe confirms valid audio codec, sample rate, duration.
+- [ ] `FILE_VALID`: Each SFX audio file > 10KB. ffprobe confirms valid audio codec, sample rate, duration.
 - [ ] `DURATION_MATCH`: Duration within 0.5s of requested.
-- [ ] `NOT_SILENCE`: File contains actual audio content (peak amplitude > -40dB). Play first 2 seconds and verify.
-- [ ] `PLACEMENT_CONCRETE`: Every SFX has concrete `after_segment` reference (NOT null). `time_offset_seconds` is set.
+- [ ] `NOT_SILENCE`: File contains actual audio content (peak amplitude > -40dB).
+- [ ] `COMPOSITION_COMPILES`: Unit composition compiles after adding `SfxLayer.tsx`.
+- [ ] `PLACEMENT_CONCRETE`: Every `<Audio>` in SfxLayer has concrete frame offset (NOT frame 0 unless intentional). Timing matches transition/emphasis points.
 - [ ] `CONTEXT_MATCH`: SFX type matches its context — transition points → whoosh/riser, text appearance → pop/swoosh, emphasis → blip/hit. NOT random sounds at random times.
-- [ ] `TIMELINE_BOUNDS`: All SFX placements fall within the unit's timeline range.
+- [ ] `TIMELINE_BOUNDS`: All SFX `<Audio>` placements fall within the unit composition's duration.
 
 **Phase 15 — Music:**
 - [ ] `NOT_SPEECH`: Generated audio is instrumental music, NOT speech narration. Play first 10 seconds — if you hear words or human voice describing music, the gate FAILS. This means you used the wrong API (Gemini TTS instead of Lyria).
 - [ ] `FILE_VALID`: ffprobe confirms valid audio. File size > 100KB for 30s WAV. Correct sample rate (48kHz).
 - [ ] `NO_DISTORTION`: No clipping artifacts (peak amplitude < 0dBFS).
+- [ ] `COMPOSITION_COMPILES`: Unit composition compiles after adding `MusicLayer.tsx`.
+- [ ] `DUCKING_WORKS`: MusicLayer uses `interpolate()` with VAD-derived keyframes. Volume drops during speech segments, raises during silences.
 - [ ] `STYLE_MATCH`: Music style matches user-approved brief (genre, mood, energy level).
-- [ ] `DUCKING_COMPUTED`: Ducking keyframes computed from VAD data and written to manifest. Keyframes exist for every speech segment.
 - [ ] `API_CORRECT`: Music was generated using Lyria 2 (Vertex AI) or Lyria RealTime (Gemini API), or provided by user. NOT generated using Gemini `response_modalities=["AUDIO"]` — that is TTS and will always fail `NOT_SPEECH`.
 
 #### Failure Protocol
@@ -515,43 +898,49 @@ The user only sees failures the main agent couldn't resolve on its own. Successe
 
 These phases run **independently per unit**. Launch parallel agents following the Agent Spawn Protocol above. Each agent works on its assigned unit with full global context but scoped mutations. Every agent MUST pass its phase-specific quality gates before handoff.
 
-#### Phase 13: Animations (if needed)
-When manifest or user indicates animations needed:
+#### Phase 13: Animations & VFX (if needed)
+
+**READ FIRST:** `references/transition-fundamentals.md` (MANDATORY for any transition code), `references/source-citation-style.md` (for source citation visuals — grungy highlighter on browser screenshots), `references/remotion-compositing.md` (FullVideo pattern, rotoscoping), `templates/styles/{style}/style_profile.json` (signature moves, composition patterns, typography). Assets are in `assets/` — reference by manifest ID, do NOT web-search for images.
+
+Agents produce **Remotion `.tsx` components** that get added as layers to the unit's composition — NOT pre-rendered video files. Everything stays non-destructive until final render.
+
+When manifest or user indicates animations/VFX needed:
 - Detect from transcript ("this needs animation", "let me show you a diagram")
 - Read any whiteboard/paper sketches from video frames via Claude vision
 - For `audio` units: generate Remotion visuals synced to audio
-- For `text_image` units: convert source material to Remotion video
+- For `text_image` units: convert source material to Remotion components
 - Ask user to record voiceover FIRST → pace animation to match
-- Generate Manim (math/diagrams) or Remotion (motion graphics) code
 - **Read `style_config.json` and apply colors, fonts, dimensions**
-- Render and add to unit manifest. **User approves each animation.**
 
-**Full-video compositing:** When the user wants overlays, VFX, or rotoscoping across the entire source footage (not just isolated clips), use Remotion as a full compositing engine. See `references/remotion-compositing.md` for the FullVideo pattern, rotoscoping pipeline (rembg + WebM VP9 alpha), VFX overlay system, logo animation with motion typography, and content-aware effect mapping.
+**Agent output:** Each agent writes `.tsx` component files to `remotion/src/units/{unit_id}/layers/`. Examples:
+- `AnimationLayer.tsx` — motion graphics, diagrams, Manim-rendered sequences
+- `OverlayLayer.tsx` — rotoscoped masks (rembg + alpha video), logo compositing
+- `TypographyLayer.tsx` — kinetic typography, lower thirds, callouts
+- `SubtitleLayer.tsx` — styled subtitles from transcript data
 
-**Registering composited renders:** After rendering a full composited video, register it in `edit_manifest.json` as an `added_media` entry with `placement: "composited"`. The studio shows these in a "Composited Output" section with version history — each re-render gets a new entry with a timestamp, and previous renders are accessible via a collapsible history. Example:
+The agent then imports these layers into the unit's `Composition.tsx` and registers them in the composition's layer stack. The composition controls layer ordering, timing, and visibility.
 
-```json
-{
-  "filename": "full_composited.mp4",
-  "path": "units/unit_002/animations/unit002_overlays/out/full_composited.mp4",
-  "type": "video",
-  "placement": "composited",
-  "codec_video": "h264",
-  "duration_seconds": 101.75,
-  "width": 1920,
-  "height": 1080,
-  "fps": 30,
-  "notes": "Source + rotoscope + logos + VFX overlays",
-  "added_at": "2026-03-14T18:00:00.000Z"
-}
-```
+**Full-video compositing:** When the user wants overlays, VFX, or rotoscoping across the entire source footage, these are Remotion layers composited on top of the source — not separate renders. See `references/remotion-compositing.md` for the FullVideo pattern, rotoscoping pipeline (rembg + WebM VP9 alpha), VFX overlay system, logo animation with motion typography.
 
-Each subsequent render adds a new entry (don't replace the old one). The studio sorts by `added_at` and shows the latest as the primary playable, with older versions in a collapsible history.
+**Pre-rendered assets as Remotion inputs:** Some VFX require pre-computed assets (e.g., rembg mask sequences, alpha-channel WebM from rotoscoping). These are still generated as files but referenced by Remotion components — the component handles compositing, timing, and blending. The asset is data; the composition logic stays in `.tsx`.
+
+**User approves each animation** by previewing the unit composition in studio (iframe to Remotion Studio) or opening the full Remotion Studio UI.
 
 #### Phase 14: SFX Generation
-Identify SFX candidates: cut/transition points (high confidence), speech pauses > 0.5s (medium), pitch emphasis changes (medium). **Never auto-place** comedic timing or emotional beats. Run `--dry-run` first to show user the plan. After approval, generate via ElevenLabs `text_to_sound_effects`. See `references/sfx-music-generation.md`. **User approves placement.**
+
+Agents generate SFX audio files AND write Remotion `<Audio>` components to place them in the unit's composition.
+
+Identify SFX candidates: cut/transition points (high confidence), speech pauses > 0.5s (medium), pitch emphasis changes (medium). **Never auto-place** comedic timing or emotional beats. Run `--dry-run` first to show user the plan. After approval, generate via ElevenLabs `text_to_sound_effects`. See `references/sfx-music-generation.md`.
+
+**Agent output:**
+1. Generate SFX audio files to `<project_root>/sfx/` (same as before)
+2. Write `remotion/src/units/{unit_id}/layers/SfxLayer.tsx` — a Remotion component that places `<Audio>` elements at the correct timeline positions with volume control
+3. Import `SfxLayer` into the unit's `Composition.tsx`
+
+SFX are toggleable layers — the user can disable them from the composition without deleting files. **User approves placement.**
 
 #### Phase 15: Background Music
+
 **Do NOT use Gemini `response_modalities=["AUDIO"]`** — that is TTS (text-to-speech), not music generation. It produces speech narration, not instrumental tracks.
 
 Music sources (in order of preference):
@@ -560,87 +949,102 @@ Music sources (in order of preference):
 3. **Lyria RealTime via Gemini API** — WebSocket streaming, captures longer continuous tracks. Experimental.
 4. **Skip music in pipeline** — user adds music manually. Ducking keyframe data is still written to manifest.
 
-For any music source: create ducking keyframes from VAD data — lower volume during speech, raise during silences/transitions. Fade in/out at track boundaries. **Ask user to approve style.** Different units can have different music styles. See `references/sfx-music-generation.md`.
+**Agent output:**
+1. Generate/acquire music audio files to `<project_root>/music/`
+2. Write `remotion/src/units/{unit_id}/layers/MusicLayer.tsx` — a Remotion component with `<Audio>` and volume keyframes computed from VAD data (ducking during speech, raising during silences/transitions, fade in/out at boundaries)
+3. Import `MusicLayer` into the unit's `Composition.tsx`
+
+Different units can have different music styles. Music ducking is a Remotion `interpolate()` call driven by VAD data — fully adjustable without re-rendering. **Ask user to approve style.** See `references/sfx-music-generation.md`.
 
 ### Phase 16: Thumbnails (GLOBAL)
 
 Pick the best frames (highest interest_score) across all units. Generate 3 thumbnail options using Pillow — bold text overlay with title. Resolution 1280×720. **User picks favorite.**
 
-### Phase 16b: Merge Units into Global Timeline
+### Phase 16b: Merge Unit Compositions into Master
 
-Read all unit manifests from `units/*/footage_manifest.json`. Collect updated clips, SFX, animations from each unit. Merge into the global multi-track timeline. Rebase file paths from unit-relative to project-relative. Back up pre-merge timeline as `_pre_merge_timeline`. Update `pipeline_state.units_merged = true`.
+**READ FIRST:** `references/transition-fundamentals.md` (MANDATORY — all inter-unit transitions are built here), `templates/styles/{style}/style_profile.json` (pacing rules, music behavior for the merge).
+
+Merge is **stitching Remotion compositions**, not rendering videos and concatenating them. The master composition imports each unit composition as a sequence — all layers remain separate and editable.
+
+1. Create/update `remotion/src/Master.tsx` — the master composition that sequences all unit compositions
+2. Each unit composition is imported as a `<Series.Sequence>` in unit order
+3. Inter-unit transitions (controlled by main agent, not unit agents) are added as Remotion transition components between sequences. **Read `references/transition-fundamentals.md` before writing transition code.** Transitions must follow AE fundamentals: scale match cuts (zoom in → cut → zoom out), position match cuts (momentum direction matches across cut), glitch hard cuts (for high-contrast reveals), and 1-2 frame invert stutter at every cut point. Do NOT use `backdropFilter` — use solid overlay layers only.
+4. Global music tracks that span multiple units are added as a top-level `<Audio>` layer with ducking keyframes merged from all units' VAD data
+5. Register `MasterComposition` in `remotion/src/index.ts` with total duration = sum of unit durations + transitions
+
+Back up pre-merge master as `Master.tsx.bak`. Update `pipeline_state.units_merged = true`.
 
 **Merge rules:**
-- Unit-level changes (SFX, animations, clip edits) are applied to the global timeline tracks
-- Inter-unit transitions are preserved from the global timeline (main agent controls these)
-- Music tracks are global — merge ducking keyframes from all units' VAD data
-- Animations from each unit go to the `overlay` track with correct timeline positions
+- Unit compositions are imported as-is — their internal layers (VFX, subtitles, SFX, unit-level music) are NOT flattened
+- Inter-unit transitions are Remotion components wrapping adjacent unit sequences
+- Global music (if any) is a separate layer on top of the master, distinct from per-unit music
+- Unit order from `edit_manifest.json` determines sequence order in `Master.tsx`
 
-**Merge output contract** (Phase 17 exporters depend on this exact structure):
-- Each clip on a track MUST have: `id`, `source_clip_id`, `in_point`, `out_point`, `trim`, `deleted_ranges`
-- `timeline.tracks[].clips` MUST be ordered by `timeline_start`
-- Transitions MUST reference valid `from_clip`/`to_clip` IDs
-- All source clips referenced by timeline clips MUST exist in the main `clips[]` array — including animation clips and inserted media
-- Use `ffprobe` to verify actual durations — do not trust unit manifest values blindly
-- Trim ranges and deleted_ranges from the edit_manifest MUST be applied — the exporter enforces these but the merge should respect them too
+**Merge output contract** (Phase 17 render depends on this):
+- `Master.tsx` MUST compile without errors (`npx remotion compositions` lists it)
+- Every unit composition referenced in Master MUST exist and compile independently
+- Total duration of master MUST equal sum of unit durations + transition durations
+- All media files referenced by any unit composition MUST exist on disk
+- Trim ranges and deleted_ranges from edit_manifest MUST be respected in unit compositions
 
-### Phase 17: Render with Remotion
+### Phase 17: Final Render
 
-Build and render the final video using Remotion. Each unit is a Remotion composition; the master composition stitches all units with inter-unit transitions.
+This is the only phase that produces rendered video files. Everything before this is Remotion source code — compositions, layers, components.
 
-**Per-unit rendering:**
+**Master render (full video):**
 ```bash
-npx remotion render src/index.tsx UnitComposition \
-  --props='{"specPath": "units/unit_001/composition_spec.json"}' \
-  --output="renders/unit_001.mp4" \
-  --codec=h264 --concurrency=50%
+cd <project_root>/remotion && npx remotion render src/index.ts MasterComposition \
+  --output="../renders/final_16x9.mp4" \
+  --gl=angle --codec=h264 --concurrency=50%
 ```
 
-**Master composition** (all units sequenced):
+**Per-unit render (optional, for review):**
 ```bash
-npx remotion render src/index.tsx MasterComposition \
-  --output="renders/final.mp4" \
-  --codec=h264 --concurrency=50%
+cd <project_root>/remotion && npx remotion render src/index.ts Unit001 \
+  --output="../renders/unit_001.mp4" \
+  --gl=angle --codec=h264 --concurrency=50%
 ```
 
 **Output formats:**
-- 16:9 long-form (1920x1080, 30fps) — primary
-- 9:16 long-form (1080x1920, 30fps) — uses crop keyframes from timeline
-- 9:16 shorts (extracted key segments, < 60s each)
+- 16:9 long-form (1920x1080, 30fps) — primary. Render `MasterComposition`.
+- 9:16 long-form (1080x1920, 30fps) — uses crop keyframes. Render `MasterComposition9x16` (same layers, different viewport + crop transforms).
+- 9:16 shorts (extracted key segments, < 60s each) — render individual `Short001`, `Short002` etc. compositions.
 
-**Composition is data-driven:** Remotion reads `composition_spec.json` (generated in Phase 14) containing clip references, VFX effects, transitions, SFX layers, music, and typography. No editorial decisions in Remotion code — all decisions live in the spec. See `references/vfx-pipeline-plan.md` for the full composition architecture.
+**Layer toggling at render time:** Because subtitles, SFX, music, VFX are all separate Remotion layers, the user can disable any layer before rendering. Want no subtitles? Comment out or prop-toggle `SubtitleLayer` in the composition. Want different music? Swap the `MusicLayer` audio source. No re-processing of any other layer needed.
 
-**VFX effects available:** kinetic typography (Devanagari-first), Ken Burns zoom, background blur, rotoscoping, speed ramping, color grading, transitions (whip pan, mask reveal, glitch, dissolve), SVG illustrations synced to content. See `references/vfx-pipeline-plan.md`.
+**VFX effects available:** kinetic typography (Devanagari-first), Ken Burns zoom, background blur, rotoscoping, speed ramping, color grading, transitions (whip pan, mask reveal, glitch, dissolve), OSM maps via MapLibre GL (`OSMMap` component — see Key Rule 19), SVG boundary animations (`NepalGeoMap`). See `references/vfx-pipeline-plan.md`.
 
-**Audio:** ElevenLabs for SFX (5-layer system) and music (Eleven Music API with composition plans). All audio is mixed in the Remotion composition — SFX coupled to VFX events, music with VAD-driven ducking keyframes.
+**Audio mixing:** All audio (source clips, SFX, music) is mixed in the Remotion composition via `<Audio>` components. SFX coupled to VFX events, music with VAD-driven ducking via `interpolate()`.
 
-### Phase 18: Sync Validation + Trim Enforcement
+### Phase 18: Composition Validation + Trim Enforcement
 
-Verify the assembled project before export. **This is the enforcement layer — it fails the build rather than producing bad output.**
+Verify all Remotion compositions compile and are structurally correct before final render. **This is the enforcement layer — it fails the build rather than producing bad output.**
 
-**Media validation:**
-- All referenced media files exist on disk
-- Audio/video durations match manifest values (ffprobe verification)
+**Composition validation:**
+- `npx remotion compositions` succeeds — all unit compositions and MasterComposition are listed without errors
+- Each unit composition renders at least 1 frame without crashing (`npx remotion still --gl=angle`)
+- All media files referenced by `<Video>`, `<Audio>`, `<Img>` components exist on disk
+- Audio/video durations of source files match what the compositions expect (ffprobe verification)
 
 **Timeline validation:**
-- No clip overlaps within a track
-- Transitions reference valid clip pairs
-- SFX/overlay placements fall within timeline bounds
-- Unit groups don't overlap on the timeline
+- No clip overlaps within a composition's video track
+- Inter-unit transitions in MasterComposition reference valid adjacent unit sequences
+- SFX/overlay layer timing falls within the unit composition's duration
+- Total MasterComposition duration = sum of unit durations + transitions
 
 **Trim enforcement (critical):**
-- Every clip reference on the timeline MUST fall within its `trim` range
-- No clip reference may include content from `deleted_ranges`
-- If ANY violation is found: **REJECT the build with an explicit error** listing every violation. Do NOT silently clamp or adjust — fail loudly so the user can fix the source data
-- This prevents Claude or any agent from accidentally (or hallucination-driven) including trimmed/deleted content
+- Every `<Video>` or `<OffthreadVideo>` component's `startFrom`/`endAt` MUST respect the clip's `trim` range from edit_manifest
+- No video component may include frames from `deleted_ranges`
+- If ANY violation is found: **REJECT the build with an explicit error** listing every violation. Do NOT silently clamp or adjust — fail loudly so the user can fix the composition
+- This prevents agents from accidentally including trimmed/deleted content in their `.tsx` code
 
-Report all issues. Build cannot proceed to Phase 17 export until validation passes.
+Report all issues. Build cannot proceed to Phase 17 render until validation passes.
 
 ### Phase 19: YouTube Metadata (CONVERSATIONAL)
 
 Generate YouTube metadata:
 - Title, description with chapters, tags, category
-- Handle Nepali+English — use "ne" as default language
+- Language from `project.language`: `ne` or `ne+en` → `"ne"`, `en` → `"en"`
 - Shorts metadata for each short
 - **User approves before finalizing.**
 
@@ -655,6 +1059,8 @@ Remove `tmp/` directory. Optionally remove: `frames/`, `analysis/` (manifest has
 Phases marked with **bold user approval** MUST pause and wait for user input:
 - Phase 10: Screen recording layout choice
 - Phase 11b: Unit decomposition review
+- Phase 11b (research): Research brief approval (user confirms facts, selects B-roll clips)
+- Phase 11c (assets): Asset manifest review (user adds/removes assets before fetching), asset dashboard review (user resolves needs_review items)
 - Phase 12: Per-unit timeline review and edits (iterate!)
 - Phase 13: Each animation approval
 - Phase 14: SFX placement approval (per-unit)
@@ -686,13 +1092,58 @@ For detailed technical information, read from `references/`:
 - `studio-instruction-protocol.md` — How Claude interprets markers, instructions, trim/split/drag/delete operations
 - `pipeline-runtime-notes.md` — Operational findings: dependency gotchas, Chirp 2 location constraints, manifest format expectations between phases
 - `remotion-compositing.md` — Remotion as full compositing engine: FullVideo pattern, rotoscoping (rembg + VP9 alpha), VFX overlay system, logo animation, motion typography
+- `transition-fundamentals.md` — **MANDATORY** transition reference. AE-style fundamentals: pace/rhythm, cut-at-peak-movement, 1-2 frame invert stutter, momentum matching, contrast-driven hard cuts. Read this BEFORE writing any transition code.
+- `source-citation-style.md` — How to visually cite sources in videos: browser screenshots with grungy highlighter markup, visible URL/portal branding, QR codes for direct access. Used during Phase 13 when presenting research sources, news articles, or factual claims.
+- `social-media-download.md` — Platform download matrix: YouTube (direct), TikTok (Playwright search + yt-dlp impersonation), Facebook (Googlebot UA trick — only `/posts/` URLs work), Dailymotion (direct). Includes Nepal-specific pages (RONB, OnlineKhabar) and the cross-posting pattern for finding content across platforms.
+- `source-screenshot-pipeline.md` — Technical reference for capturing source citations: Playwright at 2x Retina (`device_scale_factor=2`), cookie dismissal, `get_by_text()` bounding box extraction for highlight coordinates, grungy highlighter PIL overlay (8 random-offset passes), coordinate scaling, fallback chain. Used during Phase 11c asset acquisition.
+
+## Remotion Project Structure
+
+A Remotion project template lives at `remotion/` in the repo root. Phase 1 copies it into `<project_root>/remotion/` and runs `npm install`.
+
+```
+<project_root>/remotion/
+  package.json              # Remotion deps (@remotion/cli, @remotion/player, react, etc.)
+  remotion.config.ts        # Bundler config, webpack overrides
+  src/
+    index.ts                # Root — registers all compositions (unit + master)
+    Root.tsx                 # Root component wrapping all compositions
+    Master.tsx               # Master composition — sequences all units (created in Phase 16b)
+    components/              # Shared reusable components (from template)
+      VideoClip.tsx          # Trimmed <OffthreadVideo> with deleted_ranges support
+      SubtitleRenderer.tsx   # Renders transcript JSON as styled subtitles
+      AudioLayer.tsx         # <Audio> wrapper with volume interpolation
+      TransitionLibrary.tsx  # Shared transition components (dissolve, whip pan, etc.)
+    units/                   # Per-unit compositions (created dynamically per unit)
+      unit_001/
+        Composition.tsx      # Unit root — imports and stacks all layers
+        layers/              # Agent-written components
+          SubtitleLayer.tsx   # Subtitles from transcript data
+          VfxLayer.tsx        # Visual effects, rotoscoping, overlays
+          SfxLayer.tsx        # <Audio> SFX placement
+          MusicLayer.tsx      # <Audio> music with ducking keyframes
+          AnimationLayer.tsx  # Motion graphics, diagrams
+      unit_002/
+        Composition.tsx
+        layers/
+          ...
+    lib/
+      types.ts               # Shared types (clip references, keyframes, etc.)
+      utils.ts               # Frame math, interpolation helpers
+```
+
+**Template provides:** shared components, types, config. **Agents provide:** unit-specific `.tsx` layers.
+
+**Studio integration:** `npx remotion studio --port 3002` runs from `<project_root>/remotion/` as a sidecar. Studio embeds via iframe for inline preview. "Open in Remotion Studio" links directly to `:3002`.
+
+**Rendering:** Only Phase 17 calls `npx remotion render`. All prior phases produce `.tsx` source code, not video files. **`--gl=angle` is REQUIRED on every `remotion render` and `remotion still` command** — the default SwiftShader backend cannot handle MapLibre GL's WebGL rendering. Without this flag, map compositions will render as blank or crash.
 
 ## Key Rules
 
 1. **Manifest is truth** — all state lives in `footage_manifest.json` (source data + global timeline) and `edit_manifest.json` (user edits)
 2. **Never modify originals** — `raw/` contains symlinks or denoised muxed copies (Phase 3 Step 4), originals stay at source_path
 3. **Easing is NEVER linear** — always BEZIER, SINE, EXPO, BACK, ELASTIC, BOUNCE, or CONSTANT
-4. **Nepali first** — default language is "ne", ASR handles code-switching
+4. **Language from manifest** — `project.language` drives ASR codes, vision prompts, and YouTube metadata. Default `ne+en` if unset
 5. **User has final say** — at every approval gate, present options and wait
 6. **Style consistency** — always read `style_config.json` for colors/fonts/dimensions
 7. **Global timeline, scoped units** — one timeline for the whole video. Units are logical groupings within it. Parallel agents read the full context but only write to their assigned unit
@@ -700,3 +1151,11 @@ For detailed technical information, read from `references/`:
 9. **Trim is sacred** — user-set trim ranges and deleted chunks are enforced by the exporter. No agent, no phase, no script can override trims. Phase 18 validation rejects builds that violate trims.
 10. **Unit = concept** — one unit represents one topic/concept, not one clip. A clip covering two topics becomes two units. Five takes of the same intro is one unit with the best take selected.
 11. **Scripts are optional** — reference implementations in `scripts/` can be used or bypassed; do what's most effective for the phase
+12. **Composition is the working document** — each unit has a Remotion composition (`.tsx`) that evolves through the pipeline. Agents add layers to compositions, never produce pre-rendered video files (except pre-computed assets like rembg masks). Rendering happens once at the very end (Phase 17). This means any layer (subtitles, VFX, SFX, music) can be toggled, swapped, or removed without re-processing anything else.
+13. **Agents write `.tsx` components** — per-unit agents produce actual Remotion component code in `remotion/src/units/{unit_id}/layers/`. Quality gates verify compositions compile and render correctly.
+14. **Transitions follow AE fundamentals** — MANDATORY reading: `references/transition-fundamentals.md`. Every transition must: (a) cut at peak movement, not at rest, (b) use spring/bezier easing, never linear, (c) include 1-2 frame invert stutter at cut points for clean contrast, (d) match momentum direction across the cut (outgoing direction = incoming direction), (e) use contrast (light→dark or color shifts) for hard cuts. Do NOT use `backdropFilter` in Remotion — it renders incorrectly in headless Chrome. Use solid overlay layers instead.
+15. **Assets are fetched upfront, not mid-production** — Phase 11c generates an asset manifest and fetches everything BEFORE agents start Phase 13-15 work. No agent should ever web-search for an image during composition work. All assets are in `assets/` with paths registered in `assets/manifest.json`. Agents reference assets by manifest ID.
+16. **Transcripts are free, Gemini video is not** — YouTube transcripts (`yt-dlp --write-auto-subs`) are the primary research source. Claude reads transcripts directly. Gemini video analysis is used ONLY when the user explicitly asks to analyze visual content. Never auto-escalate to Gemini for tasks Claude can do (reading images, verifying file types, comparing photos to descriptions).
+17. **Claude verifies, Gemini is last resort** — the agent (Claude) is the primary verifier for all assets. It reads downloaded images directly, checks quality, confirms identity. Gemini is used only when the user explicitly requests video analysis or when Claude genuinely cannot determine relevance (and even then, ask the user first).
+18. **Style profile drives everything** — when `project.style` is set, read `templates/styles/{style}/style_profile.json` at the start and let it inform every decision: script structure (pacing patterns), asset types (what to fetch), composition patterns (layer stacking), SFX (catalog prompts and placement), music (ducking rules, silence drops), typography (fonts, colors, animations), and transitions. Don't invent a style from scratch when a profile exists. The three-pass analysis (Phase 0) is the ONLY phase where Gemini video analysis is justified as a default — it's a one-time investment per style.
+19. **OSM Maps via MapLibre GL** — ALL map shots MUST use the `OSMMap` component (`src/components/OSMMap.tsx`) with MapLibre GL + CartoDB Dark Matter vector tiles. Never use static SVG maps for geographic accuracy — SVG maps have no coordinate system and pins land on wrong locations. Camera keyframes support smooth animated zooms from country to street level with bezier easing. Use presets: `SOUTH_ASIA`, `NEPAL_OVERVIEW`, `KATHMANDU_CLOSE`, `MAITIGHAR` (or define custom ones). City coordinates available in `src/lib/nepal-geo.ts` (75 district HQs). JH dark style overrides applied automatically: dark navy background, bright labels, visible borders, warm gray roads. Pins use MapLibre markers with spring entry animation and glow pulse. The `NepalGeoMap` component (GeoJSON renderer) is still valid for animated sequences like election floods and province dissolution — it renders province/district boundaries as SVG paths with animation support. Always layer `FilmGrainOverlay` + `Vignette` on top of map shots (standard JH layer stack). **`--gl=angle` is REQUIRED on every `remotion render` and `remotion still` command** — default SwiftShader cannot handle MapLibre's WebGL rendering.

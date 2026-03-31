@@ -1,0 +1,184 @@
+{
+  "name": "johnny_harris",
+  "description": "Geopolitical documentary — map-driven storytelling, archival flashbacks, conversational authority",
+  "source_videos": ["https://www.youtube.com/watch?v=YnOdULpV810"],
+  "analysis_files": ["pass1_discovery.md", "pass2_patterns.md", "pass3_sequences.md"],
+
+  "signature_moves": {
+    "global_map_explainer": {
+      "description": "Satellite view → zoom → color fill countries → bold white text labels",
+      "sfx": "whoosh_fast on every map change",
+      "timing": "0.5-1.5s per map transition",
+      "easing": "ease-in-out for zooms, ease-out for fills"
+    },
+    "conversational_pushin": {
+      "description": "Direct eye contact, mid-shot, very slow imperceptible push-in zoom",
+      "duration": "10-30s takes",
+      "zoom_strength": "2-5% over the take duration",
+      "easing": "ease-in-out, nearly linear — should feel subconscious",
+      "audio": "room tone always present, music ducked underneath"
+    },
+    "archival_flashback_montage": {
+      "description": "Rapid B&W or vintage color clips with original archival audio",
+      "cut_duration": "1-3s per clip",
+      "audio_behavior": "music drops to let archival audio breathe, then swells back",
+      "treatment": "original aspect ratio, film grain, sometimes letterboxed"
+    },
+    "key_concept_popup": {
+      "description": "Bold white text appears INSTANTLY on the map/location it refers to",
+      "animation": "instant (1-2 frames) or quick scale-up (0.4-0.75s ease-out)",
+      "sync": "precisely timed to the spoken word",
+      "sfx": "subtle whoosh_fast or ding"
+    },
+    "journey_arc": {
+      "description": "Curved dashed line animates across map showing connections/routes",
+      "duration": "2-4s",
+      "easing": "ease-in-out",
+      "sfx": "smooth whoosh or continuous sweep"
+    }
+  },
+
+  "sfx_catalog": {
+    "whoosh_fast": {
+      "description": "Rapid sweeping transition sound",
+      "duration": "0.3-0.5s",
+      "frequency": "mid-high, noise-based",
+      "usage": "every map transition, zoom, element appearance",
+      "category": "transition",
+      "prompt_for_generation": "fast cinematic whoosh swoosh, short 0.4 seconds, clean, mid-high frequency"
+    },
+    "hit_hard": {
+      "description": "Forceful impact sound for conflict/emphasis",
+      "duration": "0.4s",
+      "frequency": "low, noise/impact",
+      "usage": "conflict moments, major reveals",
+      "category": "emphasis",
+      "prompt_for_generation": "deep cinematic impact hit, short 0.4 seconds, low bass thud"
+    },
+    "ding_subtle": {
+      "description": "Subtle tonal ding marking key text appearance",
+      "duration": "0.3-0.5s",
+      "frequency": "high, tonal",
+      "usage": "key text overlays, important labels",
+      "category": "emphasis",
+      "prompt_for_generation": "subtle notification ding chime, 0.4 seconds, clean high tone"
+    },
+    "explosion_major": {
+      "description": "Major disaster/impact sound",
+      "duration": "0.7-1.0s",
+      "frequency": "low-mid, noise/impact",
+      "usage": "rare — disaster, attack, major conflict",
+      "category": "emphasis",
+      "prompt_for_generation": "deep explosion boom impact, 0.8 seconds, cinematic, not cartoonish"
+    }
+  },
+
+  "typography": {
+    "primary": {
+      "family": "sans-serif (Montserrat, Open Sans, or similar sturdy sans-serif)",
+      "weight": "bold",
+      "color": "#FFFFFF",
+      "usage": "main headings, labels, country names",
+      "animation": "instant appearance (1-2 frames), no fade"
+    },
+    "boxed_label": {
+      "family": "sans-serif",
+      "weight": "bold",
+      "color": "#FFFFFF",
+      "background": "#000000",
+      "usage": "country names on maps, entity labels",
+      "animation": "instant or pop-in scale (0.4-0.75s)"
+    },
+    "accent_bar": {
+      "family": "sans-serif",
+      "weight": "bold",
+      "color": "#000000",
+      "background": "#FFA500",
+      "usage": "key phrases, pivotal statements (rare — 2-3 per video)",
+      "animation": "bar slides across screen"
+    },
+    "emphasis_word": {
+      "color": "#FF0000",
+      "usage": "single words within boxed labels that need extra weight"
+    }
+  },
+
+  "color_palette": {
+    "background": "satellite imagery (primary) or flat white/grey outlines (simplified)",
+    "country_fills": ["#FFD700", "#FFA500", "#FF6600", "#CC0000"],
+    "borders": "#FF0000",
+    "text": "#FFFFFF",
+    "text_background": "#000000",
+    "accent": "#FFA500",
+    "emphasis": "#FF0000"
+  },
+
+  "map_behavior": {
+    "base_layer": "satellite imagery (OpenStreetMap / Mapbox)",
+    "simplified_layer": "flat white/grey with country outlines only",
+    "transition_between": "0.5-1s linear fade from satellite to simplified",
+    "region_highlight": "solid color fill with slight glow, 0.4-0.6s ease-out",
+    "border_draw": "red line traces the border, 1-2s linear",
+    "zoom": "1-1.5s ease-in-out",
+    "globe_rotation": "2-4s ease-in-out to shift continents",
+    "person_overlay": "circular or polygonal cutout of leader's head placed on their country"
+  },
+
+  "music_behavior": {
+    "moods": [
+      "educational_upbeat (intro, general explaining)",
+      "epic_sweeping (historical time-lapses, empire building)",
+      "tense_urgent (geopolitical tension, confrontation)",
+      "neutral_underscoring (archival footage, letting visuals speak)",
+      "dramatic_percussive (conflict, military action)",
+      "reflective_somber (consequences, human cost)",
+      "encouraging_upbeat (CTA, outro)"
+    ],
+    "silence_pattern": "music drops to SILENCE before almost every important direct statement",
+    "swell_pattern": "music swells on reveals, montages, map reveals",
+    "beat_alignment": "beats align with cuts during montage sequences",
+    "ducking": "music ducks 60-80% under speech, drops to 0% for key statements"
+  },
+
+  "pacing": {
+    "talking_head_duration": "10-30s takes (long, conversational)",
+    "graphics_duration": "2-5s per information slide",
+    "archival_clip_duration": "1-3s per clip in montages",
+    "transition_speed": "0.5-1.5s",
+    "cuts_per_minute_talking": "2-4 (slow, deliberate)",
+    "cuts_per_minute_montage": "20-30 (rapid fire)",
+    "pattern": "slow TH → fast montage → slow TH → fast montage (oscillating energy)"
+  },
+
+  "composition_rules": {
+    "talking_head": {
+      "framing": "mid-shot, slightly off-center, maps visible in background",
+      "push_in": "2-5% over 10-30s, ease-in-out",
+      "room_tone": "always present",
+      "background": "world map on wall, personal items visible"
+    },
+    "map_segments": {
+      "layering_order": [
+        "satellite/outline base map",
+        "country border traces (red)",
+        "region color fills",
+        "path/arc animations",
+        "person headshot overlays",
+        "text labels (boxed, bold white)",
+        "accent bars (orange, rare)"
+      ],
+      "density": "start sparse, add layers progressively, don't dump everything at once"
+    }
+  },
+
+  "asset_types_needed": [
+    "satellite_maps (regional, country-level)",
+    "outline_maps (simplified, flat)",
+    "archival_footage (B&W, vintage color)",
+    "person_headshots (leaders, key figures — circular cutouts)",
+    "country_flags (for context, not primary visual)",
+    "film_grain_overlay (for archival treatment)",
+    "data_visualizations (heatmaps, gradient fills)",
+    "timeline_graphics (year markers, era labels)"
+  ]
+}
